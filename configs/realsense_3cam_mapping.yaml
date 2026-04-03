@@ -1,0 +1,57 @@
+system:
+  os: ubuntu_22_04
+  kernel: 5.15.0-1091-realtime
+  backend: rsusb
+  librealsense_build_dir: /home/syhlabtop/src/librealsense/build/Release
+  note: use RSUSB-built binaries and libraries, not apt-installed librealsense tools
+
+cameras:
+  chest:
+    model: D435
+    serial: "234322070493"
+    physical_port: "5-1.1.3.1-12"
+    usb_type_descriptor: "2.1"
+    role: chest_overview
+    lerobot_key: chest
+    config:
+      type: intelrealsense
+      serial_number_or_name: "234322070493"
+      width: 640
+      height: 480
+      fps: 15
+      use_depth: false
+
+  wrist_a:
+    model: D405
+    serial: "230322273311"
+    physical_port: "5-1.1.3.3.1.2-11"
+    usb_type_descriptor: "2.1"
+    role: wrist_tbd
+    lerobot_key: wrist_a
+    config:
+      type: intelrealsense
+      serial_number_or_name: "230322273311"
+      width: 640
+      height: 480
+      fps: 15
+      use_depth: true
+
+  wrist_b:
+    model: D405
+    serial: "315122270766"
+    physical_port: "6-1.4.3.2.1-8"
+    usb_type_descriptor: "3.2"
+    role: wrist_tbd
+    lerobot_key: wrist_b
+    config:
+      type: intelrealsense
+      serial_number_or_name: "315122270766"
+      width: 640
+      height: 480
+      fps: 15
+      use_depth: true
+
+notes:
+  - wrist_a and wrist_b should be renamed to left_wrist and right_wrist after physical mounting is finalized
+  - start with 640x480 @ 15fps to reduce bandwidth risk during first validation
+  - enable color only for chest camera first; depth on wrist cameras can be kept if stable, otherwise disable temporarily

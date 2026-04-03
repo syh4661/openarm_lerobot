@@ -1,0 +1,13 @@
+.venv/
+.venv310/
+.venv312/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+data/
+episodes/
+videos/
+logs/
