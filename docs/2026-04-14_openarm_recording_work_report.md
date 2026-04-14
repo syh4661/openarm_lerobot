@@ -509,21 +509,115 @@ Any earlier shutdown-related edits in sibling `../lerobot` were reverted. Final 
   - right wrist = `230322273311`
   - chest = `234322070493`
 
+### Recording smoothness / FPS validation
+
+One more practical observation was confirmed during real runs:
+
+- recording with `--dataset.fps=15` looked noticeably stuttery
+- 30 FPS recording looked materially smoother
+
+### Why 15 Hz looked worse in this repo
+
+This did **not** look like a simple “RealSense 15 FPS is always broken” issue.
+
+The more accurate explanation from the code path is that `dataset.fps` in LeRobot is not just a passive video metadata knob. In teleop recording it effectively sets the **main record/control loop cadence**.
+
+So when the user raised `dataset.fps` from 15 to 30 and things felt much better, that was not merely “saving video at a higher FPS.” It also raised how often the loop:
+
+- reads robot observations
+- reads teleoperator actions
+- sends actions to the robot
+- writes dataset frames
+
+The camera-vs-dataset mismatch still matters, but it is a secondary factor on top of that higher-level loop-rate change.
+
+Relevant paths:
+
+- `scripts/run_record.sh`
+- `configs/record_rgb.json`
+- `configs/record_full.json`
+- `configs/record_rgb_head_fixture.json`
+- `configs/realsense_3cam_mapping.yaml`
+- `../lerobot/src/lerobot/scripts/lerobot_record.py`
+- `../lerobot/src/lerobot/robots/openarm_follower/openarm_follower.py`
+- `../lerobot/src/lerobot/cameras/camera.py`
+- `../lerobot/src/lerobot/cameras/opencv/camera_opencv.py`
+- `../lerobot/src/lerobot/cameras/realsense/camera_realsense.py`
+- `../lerobot/src/lerobot/datasets/lerobot_dataset.py`
+- `../lerobot/src/lerobot/datasets/video_utils.py`
+
+### Code-path explanation
+
+1. The OpenArm presets default camera streams to **30 FPS**.
+2. The wrapper forwards `--dataset.fps=15` as a dataset / record-loop override unless camera leaf overrides are also given.
+3. `lerobot_record.py` passes `cfg.dataset.fps` directly into `record_loop(... fps=cfg.dataset.fps, ...)`.
+4. Inside `record_loop`, `control_interval = 1 / fps` and each loop tick performs:
+   - `robot.get_observation()`
+   - `teleop.get_action()`
+   - `robot.send_action()`
+   - `dataset.add_frame()`
+5. OpenArm robot observations read camera frames through `cam.read_latest()`.
+6. `read_latest()` is a non-blocking “give me the latest buffered frame” path, not a synchronous “wait for a fresh frame exactly now” path.
+7. Dataset timestamps / encoded video cadence are then written against the nominal dataset FPS.
+
+That means the tested 15 FPS run was effectively closer to:
+
+- teleop / robot / dataset loop cadence: **15 Hz**
+- camera production: **30 FPS**
+- recording / dataset frame cadence: **15 FPS**
+- frame retrieval style: **latest buffered frame**
+
+So two effects were stacked together:
+
+1. the robot control / capture loop itself was slower
+2. the camera stream was still being sampled from a faster 30 FPS producer
+
+### Practical consequence
+
+At 15 Hz, the recorder only advances the full teleop/robot/data loop every ~66.7 ms while the cameras are still producing frames every ~33.3 ms.
+
+In that setup, two things can happen more easily:
+
+1. intermediate camera frames are skipped
+2. the recorder may observe frames with uneven age because it is peeking the latest available buffered image rather than synchronizing to a fresh capture edge
+
+That already makes teleop and observation updates feel less continuous. When encoded back onto a clean 15 FPS timeline, the result can look more “jerky” than expected from FPS reduction alone.
+
+By contrast, 30 FPS looks smoother here because:
+
+- preset camera FPS is already 30
+- the teleop / robot / dataset loop target is also 30
+- the camera stream cadence and recording cadence are better aligned
+- there is less visible aliasing between camera production and dataset sampling
+
+### Important nuance
+
+This does **not** prove that “15 FPS is bad in general.”
+
+It means that in the observed runs, **15 Hz teleop/robot/data cadence with 30 FPS camera streams** produced a visibly worse result than the aligned 30/30 path.
+
+If a lower-rate mode is required, the more correct comparison is:
+
+- `dataset.fps = 15`
+- camera FPS also overridden to `15`
+
+rather than only lowering dataset FPS.
+
+### Operational takeaway
+
+For this repo, the safest tuning order remains:
+
+1. try `30 / 30`
+2. if needed, degrade to `20 / 20`
+3. only then test `15 / 15`
+
+In other words, lower the dataset cadence and camera cadence **together**, not just the dataset side.
+
 ---
 
-## Current unresolved / not fully closed items
+## Current unresolved / follow-up items
 
-## 1. End-effector shutdown still needs one more real hardware verification
-
-The latest local safe shutdown implementation is stronger and better aligned with vendor OpenArm behavior, but final hardware confirmation is still needed.
-
-The key open question is:
-
-> Does the new batch disable + batch receive path fully de-arm the end effector in real runs, including Ctrl-C exits?
-
-This must be verified on hardware.
-
-## 2. Ctrl-C traceback behavior vs hardware state
+## 1. Ctrl-C traceback behavior vs hardware state
 
 At one point a `KeyboardInterrupt` traceback appeared after cleanup/upload. Later observation suggested the traceback itself was not the main problem; the real concern was whether the end effector had actually powered down.
 
@@ -531,7 +625,7 @@ So the shutdown safety problem took priority over cosmetic interrupt handling.
 
 If hardware shutdown becomes stable, graceful `KeyboardInterrupt` suppression can be revisited afterward.
 
-## 3. Old datasets may still contain wrong wrist labels
+## 2. Old datasets may still contain wrong wrist labels
 
 Any datasets recorded before the camera serial remap fix may have left/right wrist images mislabeled.
 

@@ -131,6 +131,19 @@ Field validation outcome:
 
 - short real hardware recording runs confirmed that both follower and leader now power down correctly at the end of recording
 - the earlier regression where safe leader types triggered a non-interactive calibration prompt was fixed by reusing the existing `openarm_leader` calibration namespace and syncing that loaded calibration into the Damiao bus object
+- practical recording validation also showed that `--dataset.fps=15` looked noticeably more stuttery than the default 30 FPS path when camera FPS was left at the preset 30
+
+Why the 15 FPS run looked worse:
+
+- in LeRobot teleop recording, `dataset.fps` effectively sets the main record/control loop cadence, not just saved video metadata
+- raising `dataset.fps` from 15 to 30 therefore increases how often the system reads teleop action, reads robot observation, sends robot action, and writes dataset frames
+- on top of that, the tested path still kept the preset camera streams at 30 FPS and read them through `cam.read_latest()`
+- that means the 15 Hz run combined a slower teleop/robot/data loop with a `30 FPS camera -> 15 Hz sampler` mismatch, which is more prone to skipped intermediate frames and uneven frame age
+- the aligned 30/30 path therefore looks smoother in practice
+
+Operational implication:
+
+- if lower-rate recording is needed, tune camera FPS and dataset FPS together (`30/30 -> 20/20 -> 15/15`) instead of only lowering `dataset.fps`
 
 Why this matters:
 
