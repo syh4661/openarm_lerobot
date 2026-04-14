@@ -44,6 +44,21 @@ EPISODES="${3:-2}"
 EPISODE_TIME="${4:-20}"
 RESET_TIME="${5:-20}"
 EXTRA_ARGS=("${@:6}")
+CONFIG_PATCH_ARGS=()
+PASSTHROUGH_ARGS=()
+
+for arg in "${EXTRA_ARGS[@]}"; do
+  case "$arg" in
+    --robot.*.cameras.*=*|--teleop.*.cameras.*=*)
+      CONFIG_PATCH_ARGS+=("$arg")
+      ;;
+    *)
+      PASSTHROUGH_ARGS+=("$arg")
+      ;;
+  esac
+done
+
+EXTRA_ARGS=("${PASSTHROUGH_ARGS[@]}")
 
 if [ -z "$PRESET" ] || [ -z "$RUN_NAME" ]; then
   usage
@@ -75,7 +90,7 @@ esac
 
 mkdir -p "$TMP_DIR"
 
-python3 - "$TEMPLATE" "$GENERATED" "$REPO_ID" "$DATA_ROOT" "$EPISODES" "$EPISODE_TIME" "$RESET_TIME" "$PUSH_TO_HUB" <<'PY'
+python3 - "$TEMPLATE" "$GENERATED" "$REPO_ID" "$DATA_ROOT" "$EPISODES" "$EPISODE_TIME" "$RESET_TIME" "$PUSH_TO_HUB" "${CONFIG_PATCH_ARGS[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -84,6 +99,23 @@ template = Path(sys.argv[1])
 generated = Path(sys.argv[2])
 push_to_hub_raw = sys.argv[8].lower()
 
+
+def parse_scalar(raw: str):
+    lowered = raw.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
 cfg = json.loads(template.read_text())
 cfg["dataset"]["repo_id"] = sys.argv[3]
 cfg["dataset"]["root"] = sys.argv[4]
@@ -91,6 +123,19 @@ cfg["dataset"]["num_episodes"] = int(sys.argv[5])
 cfg["dataset"]["episode_time_s"] = int(sys.argv[6])
 cfg["dataset"]["reset_time_s"] = int(sys.argv[7])
 cfg["dataset"]["push_to_hub"] = push_to_hub_raw in {"1", "true"}
+
+for override in sys.argv[9:]:
+    key, value = override[2:].split("=", 1)
+    parts = key.split(".")
+    target = cfg
+    for part in parts[:-1]:
+        if part not in target or not isinstance(target[part], dict):
+            raise KeyError(f"Unsupported nested config override: --{key}")
+        target = target[part]
+    leaf = parts[-1]
+    if leaf not in target:
+        raise KeyError(f"Unknown config key in override: --{key}")
+    target[leaf] = parse_scalar(value)
 
 generated.write_text(json.dumps(cfg, indent=2))
 print(generated)
