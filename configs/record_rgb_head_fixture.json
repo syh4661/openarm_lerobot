@@ -1,0 +1,76 @@
+{
+  "robot": {
+    "type": "bi_openarm_follower",
+    "id": "openarm_bimanual_follower",
+    "left_arm_config": {
+      "port": "can1",
+      "side": "left",
+      "use_can_fd": true,
+      "cameras": {
+        "left_wrist": {
+          "type": "intelrealsense",
+          "serial_number_or_name": "230322273311",
+          "width": 640,
+          "height": 480,
+          "fps": 15,
+          "use_depth": false
+        },
+        "head": {
+          "type": "intelrealsense",
+          "serial_number_or_name": "234322070493",
+          "width": 640,
+          "height": 480,
+          "fps": 15,
+          "use_depth": false
+        }
+      }
+    },
+    "right_arm_config": {
+      "port": "can0",
+      "side": "right",
+      "use_can_fd": true,
+      "cameras": {
+        "right_wrist": {
+          "type": "intelrealsense",
+          "serial_number_or_name": "315122270766",
+          "width": 640,
+          "height": 480,
+          "fps": 15,
+          "use_depth": false
+        }
+      }
+    }
+  },
+  "teleop": {
+    "type": "bi_openarm_leader",
+    "id": "openarm_bimanual_leader",
+    "left_arm_config": {
+      "port": "can3",
+      "manual_control": true,
+      "use_can_fd": true
+    },
+    "right_arm_config": {
+      "port": "can2",
+      "manual_control": true,
+      "use_can_fd": true
+    }
+  },
+  "dataset": {
+    "repo_id": "local/openarm_record_TEMPLATE",
+    "root": "/home/syhlabtop/workspace/openarm_lerobot/data/openarm_record_TEMPLATE",
+    "single_task": "OpenArm teleoperation phase-1 collection",
+    "fps": 15,
+    "episode_time_s": 20,
+    "reset_time_s": 20,
+    "num_episodes": 2,
+    "video": true,
+    "push_to_hub": false,
+    "private": false,
+    "streaming_encoding": true,
+    "encoder_threads": 2,
+    "rename_map": {}
+  },
+  "display_data": false,
+  "play_sounds": true,
+  "resume": false
+}
