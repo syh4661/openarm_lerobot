@@ -11,3 +11,4 @@ data/
 episodes/
 videos/
 logs/
+.sisyphus/
