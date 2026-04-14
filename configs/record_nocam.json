@@ -1,6 +1,6 @@
 {
   "robot": {
-    "type": "bi_openarm_follower",
+    "type": "safe_bi_openarm_follower",
     "id": "openarm_bimanual_follower",
     "left_arm_config": {
       "port": "can1",
@@ -16,7 +16,7 @@
     }
   },
   "teleop": {
-    "type": "bi_openarm_leader",
+    "type": "safe_bi_openarm_leader",
     "id": "openarm_bimanual_leader",
     "left_arm_config": {
       "port": "can3",
