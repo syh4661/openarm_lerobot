@@ -34,6 +34,7 @@ Examples:
   OPENARM_RECORD_REPO_ID=KETI-IRRC/openarm_phase1_test12 OPENARM_RECORD_PUSH_TO_HUB=1 ./scripts/run_record.sh rgb test12
   ./scripts/run_record.sh rgb langtest 2 20 20 --dataset.fps=30 --dataset.single_task="Hand over the red cube"
   ./scripts/run_record.sh rgb stable20 2 20 20 --dataset.fps=20 --robot.left_arm_config.cameras.left_wrist.fps=20 --robot.left_arm_config.cameras.chest.fps=20 --robot.right_arm_config.cameras.right_wrist.fps=20
+  OPENARM_RECORD_REPO_ID=syh4661/openarm_dualmanip_test03 OPENARM_RECORD_PUSH_TO_HUB=1 ./scripts/run_record.sh rgb openarm_dualmanip_test03 2 20 20 --dataset.fps=20 --dataset.single_task="pick the soda and put into the box" --robot.left_arm_config.cameras.left_wrist.fps=20 --robot.left_arm_config.cameras.chest.fps=20 --robot.right_arm_config.cameras.right_wrist.fps=20
 EOF
 }
 
