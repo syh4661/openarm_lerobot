@@ -148,6 +148,7 @@ fi
 
 source "$ROOT/.venv312/bin/activate"
 source "$ROOT/scripts/env_rsusb_py312.sh"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "[INFO] Preset      : $PRESET"
 echo "[INFO] Run name    : $RUN_NAME"
@@ -159,4 +160,4 @@ if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
   echo "[INFO] Extra args  : ${EXTRA_ARGS[*]}"
 fi
 
-python -m lerobot.scripts.lerobot_record --config_path "$GENERATED" "${EXTRA_ARGS[@]}"
+python -c 'import sys; import openarm_lerobot; sys.argv[0] = "lerobot_record"; from lerobot.scripts.lerobot_record import main; main()' --config_path "$GENERATED" "${EXTRA_ARGS[@]}"
