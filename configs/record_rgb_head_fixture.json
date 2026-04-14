@@ -12,7 +12,7 @@
           "serial_number_or_name": "230322273311",
           "width": 640,
           "height": 480,
-          "fps": 15,
+          "fps": 30,
           "use_depth": false
         },
         "head": {
@@ -20,7 +20,7 @@
           "serial_number_or_name": "234322070493",
           "width": 640,
           "height": 480,
-          "fps": 15,
+          "fps": 30,
           "use_depth": false
         }
       }
@@ -35,7 +35,7 @@
           "serial_number_or_name": "315122270766",
           "width": 640,
           "height": 480,
-          "fps": 15,
+          "fps": 30,
           "use_depth": false
         }
       }
@@ -59,7 +59,7 @@
     "repo_id": "local/openarm_record_TEMPLATE",
     "root": "/home/syhlabtop/workspace/openarm_lerobot/data/openarm_record_TEMPLATE",
     "single_task": "OpenArm teleoperation phase-1 collection",
-    "fps": 15,
+    "fps": 30,
     "episode_time_s": 20,
     "reset_time_s": 20,
     "num_episodes": 2,

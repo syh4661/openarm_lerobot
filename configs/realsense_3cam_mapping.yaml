@@ -18,7 +18,7 @@ cameras:
       serial_number_or_name: "234322070493"
       width: 640
       height: 480
-      fps: 15
+      fps: 30
       use_depth: false
 
   wrist_a:
@@ -33,7 +33,7 @@ cameras:
       serial_number_or_name: "230322273311"
       width: 640
       height: 480
-      fps: 15
+      fps: 30
       use_depth: true
 
   wrist_b:
@@ -48,10 +48,10 @@ cameras:
       serial_number_or_name: "315122270766"
       width: 640
       height: 480
-      fps: 15
+      fps: 30
       use_depth: true
 
 notes:
   - wrist_a and wrist_b should be renamed to left_wrist and right_wrist after physical mounting is finalized
-  - start with 640x480 @ 15fps to reduce bandwidth risk during first validation
+  - default target is 640x480 @ 30fps; if stability is poor, step down to 20fps and then 15fps
   - enable color only for chest camera first; depth on wrist cameras can be kept if stable, otherwise disable temporarily
