@@ -43,30 +43,36 @@ case "$PRESET" in
     ;;
 esac
 
-TEMPLATE="$CONFIG_DIR/record_${PRESET}.json"
+TEMPLATE="${OPENARM_RECORD_TEMPLATE_OVERRIDE:-$CONFIG_DIR/record_${PRESET}.json}"
 GENERATED="$TMP_DIR/record_${PRESET}_${RUN_NAME}.json"
 DATA_ROOT="$ROOT/data/${RUN_NAME}"
 REPO_ID="local/${RUN_NAME}"
 
 mkdir -p "$TMP_DIR"
 
-python3 - <<PY
+python3 - "$TEMPLATE" "$GENERATED" "$REPO_ID" "$DATA_ROOT" "$EPISODES" "$EPISODE_TIME" "$RESET_TIME" <<'PY'
 import json
+import sys
 from pathlib import Path
 
-template = Path("$TEMPLATE")
-generated = Path("$GENERATED")
+template = Path(sys.argv[1])
+generated = Path(sys.argv[2])
 
 cfg = json.loads(template.read_text())
-cfg["dataset"]["repo_id"] = "$REPO_ID"
-cfg["dataset"]["root"] = "$DATA_ROOT"
-cfg["dataset"]["num_episodes"] = int("$EPISODES")
-cfg["dataset"]["episode_time_s"] = int("$EPISODE_TIME")
-cfg["dataset"]["reset_time_s"] = int("$RESET_TIME")
+cfg["dataset"]["repo_id"] = sys.argv[3]
+cfg["dataset"]["root"] = sys.argv[4]
+cfg["dataset"]["num_episodes"] = int(sys.argv[5])
+cfg["dataset"]["episode_time_s"] = int(sys.argv[6])
+cfg["dataset"]["reset_time_s"] = int(sys.argv[7])
 
 generated.write_text(json.dumps(cfg, indent=2))
 print(generated)
 PY
+
+if [ "${OPENARM_RECORD_COMPAT_ONLY:-0}" = "1" ]; then
+  echo "[INFO] Compatibility mode: generated config only"
+  exit 0
+fi
 
 source "$ROOT/.venv312/bin/activate"
 source "$ROOT/scripts/env_rsusb_py312.sh"
