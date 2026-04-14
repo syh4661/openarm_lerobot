@@ -156,6 +156,11 @@ def validate_config(
         errors,
     )
     expect(
+        dataset.get("push_to_hub") is False,
+        "local recording presets must keep dataset.push_to_hub disabled",
+        errors,
+    )
+    expect(
         dataset.get("rename_map") == {},
         "dataset.rename_map must stay empty so camera keys are emitted canonically",
         errors,
