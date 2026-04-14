@@ -18,8 +18,8 @@ source /home/syhlabtop/workspace/openarm_lerobot/scripts/env_rsusb_py312.sh
 
 ## Intended camera mapping
 
-- `left_wrist`  -> D405 serial `230322273311` or `315122270766` (finalize after mounting)
-- `right_wrist` -> the remaining D405 serial
+- `left_wrist`  -> D405 serial `315122270766`
+- `right_wrist` -> D405 serial `230322273311`
 - `chest`       -> D435 serial `234322070493`
 
 ## Draft record command
@@ -36,13 +36,13 @@ python3 -m lerobot.scripts.lerobot_record \
   --robot.left_arm_config.port=can3 \
   --robot.left_arm_config.side=left \
   --robot.left_arm_config.cameras='{
-    left_wrist: {type: intelrealsense, serial_number_or_name: "230322273311", width: 640, height: 480, fps: 15, use_depth: true},
+left_wrist: {type: intelrealsense, serial_number_or_name: "315122270766", width: 640, height: 480, fps: 15, use_depth: true},
     chest: {type: intelrealsense, serial_number_or_name: "234322070493", width: 640, height: 480, fps: 15, use_depth: false}
   }' \
   --robot.right_arm_config.port=can2 \
   --robot.right_arm_config.side=right \
   --robot.right_arm_config.cameras='{
-    right_wrist: {type: intelrealsense, serial_number_or_name: "315122270766", width: 640, height: 480, fps: 15, use_depth: true}
+right_wrist: {type: intelrealsense, serial_number_or_name: "230322273311", width: 640, height: 480, fps: 15, use_depth: true}
   }' \
   --teleop.type=bi_openarm_leader \
   --teleop.left_arm_config.port=can1 \
