@@ -107,7 +107,7 @@ class _QuestOpenArmTeleopConfigLike(Protocol):
     spatial_scale: float
     max_ee_step_m: float
     gripper_range_deg: tuple[float, ...]
-    initial_joint_seed_deg: Sequence[float]
+    initial_joint_seed_deg: list[float]
 
 
 QUEST_OPENARM_TARGET_FRAME = "openarm_hand_tcp"
@@ -602,7 +602,7 @@ class QuestOpenArmTeleopConfig(TeleoperatorConfig):
     gripper_range_deg: tuple[float, ...] = field(
         default_factory=lambda: QUEST_OPENARM_GRIPPER_RANGE_DEG
     )
-    initial_joint_seed_deg: Sequence[float]
+    initial_joint_seed_deg: list[float]
 
     def __post_init__(self) -> None:
         self.urdf_path = Path(self.urdf_path)
@@ -618,10 +618,12 @@ class QuestOpenArmTeleopConfig(TeleoperatorConfig):
         self.gripper_range_deg = _as_float_tuple(
             "gripper_range_deg", self.gripper_range_deg, 2
         )
-        self.initial_joint_seed_deg = _as_float_tuple(
-            "initial_joint_seed_deg",
-            self.initial_joint_seed_deg,
-            8,
+        self.initial_joint_seed_deg = list(
+            _as_float_tuple(
+                "initial_joint_seed_deg",
+                self.initial_joint_seed_deg,
+                8,
+            )
         )
 
         if self.spatial_scale <= 0.0:
