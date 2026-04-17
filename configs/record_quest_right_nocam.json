@@ -1,0 +1,103 @@
+{
+  "robot": {
+    "type": "safe_openarm_follower",
+    "id": "openarm_right_follower",
+    "port": "can0",
+    "side": "right",
+    "can_interface": "socketcan",
+    "use_can_fd": true,
+    "can_bitrate": 1000000,
+    "can_data_bitrate": 5000000,
+    "disable_torque_on_disconnect": true,
+    "max_relative_target": null,
+    "cameras": {},
+    "motor_config": {
+      "joint_1": [1, 17, "dm8009"],
+      "joint_2": [2, 18, "dm8009"],
+      "joint_3": [3, 19, "dm4340"],
+      "joint_4": [4, 20, "dm4340"],
+      "joint_5": [5, 21, "dm4310"],
+      "joint_6": [6, 22, "dm4310"],
+      "joint_7": [7, 23, "dm4310"],
+      "gripper": [8, 24, "dm4310"]
+    },
+    "position_kp": [240.0, 240.0, 240.0, 240.0, 24.0, 31.0, 25.0, 25.0],
+    "position_kd": [5.0, 5.0, 3.0, 5.0, 0.3, 0.3, 0.3, 0.3],
+    "joint_limits": {
+      "joint_1": [-75.0, 75.0],
+      "joint_2": [-9.0, 90.0],
+      "joint_3": [-85.0, 85.0],
+      "joint_4": [0.0, 135.0],
+      "joint_5": [-85.0, 85.0],
+      "joint_6": [-40.0, 40.0],
+      "joint_7": [-80.0, 80.0],
+      "gripper": [-65.0, 0.0]
+    }
+  },
+  "teleop": {
+    "type": "quest_openarm_teleop",
+    "ip_address": null,
+    "controller_side": "right",
+    "urdf_path": "assets/openarm_right.urdf",
+    "target_frame": "openarm_hand_tcp",
+    "urdf_joint_names": [
+      "openarm_joint1",
+      "openarm_joint2",
+      "openarm_joint3",
+      "openarm_joint4",
+      "openarm_joint5",
+      "openarm_joint6",
+      "openarm_joint7"
+    ],
+    "motor_names": [
+      "joint_1",
+      "joint_2",
+      "joint_3",
+      "joint_4",
+      "joint_5",
+      "joint_6",
+      "joint_7",
+      "gripper"
+    ],
+    "joint_offsets_deg": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "coord_transform_vec": [
+      -2.0,
+      -1.0,
+      -3.0,
+      4.0
+    ],
+    "spatial_scale": 1.0,
+    "max_ee_step_m": 0.05,
+    "gripper_range_deg": [
+      -65.0,
+      0.0
+    ],
+    "initial_joint_seed_deg": []
+  },
+  "dataset": {
+    "repo_id": "local/openarm_record_TEMPLATE",
+    "root": "/home/syhlabtop/workspace/openarm_lerobot/data/openarm_record_TEMPLATE",
+    "single_task": "OpenArm teleoperation phase-1 collection",
+    "fps": 30,
+    "episode_time_s": 20,
+    "reset_time_s": 20,
+    "num_episodes": 2,
+    "video": false,
+    "push_to_hub": false,
+    "private": false,
+    "streaming_encoding": false,
+    "encoder_threads": 2,
+    "rename_map": {}
+  },
+  "display_data": false,
+  "play_sounds": true,
+  "resume": false
+}
