@@ -10,6 +10,7 @@ from .safe_followers import (
     SafeOpenArmLeader,
     SafeOpenArmLeaderConfig,
 )
+from .quest_teleop import QuestOpenArmTeleop, QuestOpenArmTeleopConfig
 
 __all__ = [
     "SafeBiOpenArmFollower",
@@ -20,4 +21,6 @@ __all__ = [
     "SafeOpenArmFollowerConfig",
     "SafeOpenArmLeader",
     "SafeOpenArmLeaderConfig",
+    "QuestOpenArmTeleop",
+    "QuestOpenArmTeleopConfig",
 ]

@@ -5,6 +5,9 @@ description = "OpenArm to LeRobot integration layer"
 requires-python = ">=3.12"
 dependencies = []
 
+[project.optional-dependencies]
+quest = ["oculus-reader", "placo"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
