@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "replay_name": "right_failure_smoke",
+  "control_rate_hz": 30,
+  "controller_mode": "right",
+  "samples": [
+    {
+      "t_s": 0.0,
+      "arm": "right",
+      "quest.pos_delta.x": 0.0,
+      "quest.pos_delta.y": 0.0,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.0,
+      "quest.gripper": 0.5,
+      "quest.enabled": 0,
+      "tracking_state": "idle",
+      "expected_behavior": "hold"
+    },
+    {
+      "t_s": 0.033333333,
+      "arm": "right",
+      "quest.pos_delta.x": 0.02,
+      "quest.pos_delta.y": 0.0,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.0,
+      "quest.gripper": 0.6,
+      "quest.enabled": 0,
+      "tracking_state": "missing",
+      "expected_behavior": "hold"
+    },
+    {
+      "t_s": 0.066666667,
+      "arm": "right",
+      "quest.pos_delta.x": 0.0,
+      "quest.pos_delta.y": 0.0,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.0,
+      "quest.gripper": 0.55,
+      "quest.enabled": 0,
+      "tracking_state": "stale",
+      "expected_behavior": "stop"
+    },
+    {
+      "t_s": 0.1,
+      "arm": "right",
+      "quest.pos_delta.x": 0.0,
+      "quest.pos_delta.y": 0.0,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.0,
+      "quest.gripper": 0.5,
+      "quest.enabled": 0,
+      "tracking_state": "invalid",
+      "expected_behavior": "stop"
+    }
+  ]
+}

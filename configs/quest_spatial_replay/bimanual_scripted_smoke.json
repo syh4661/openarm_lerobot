@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "replay_name": "bimanual_scripted_smoke",
+  "control_rate_hz": 30,
+  "controller_mode": "bimanual",
+  "samples": [
+    {
+      "t_s": 0.0,
+      "arm": "left",
+      "quest.pos_delta.x": 0.0,
+      "quest.pos_delta.y": 0.0,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.0,
+      "quest.gripper": 0.5,
+      "quest.enabled": 0,
+      "tracking_state": "idle",
+      "expected_behavior": "hold"
+    },
+    {
+      "t_s": 0.033333333,
+      "arm": "right",
+      "quest.pos_delta.x": 0.011,
+      "quest.pos_delta.y": 0.0,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.0,
+      "quest.gripper": 0.62,
+      "quest.enabled": 1,
+      "tracking_state": "tracking",
+      "expected_behavior": "right_arm_move_x"
+    },
+    {
+      "t_s": 0.066666667,
+      "arm": "left",
+      "quest.pos_delta.x": 0.0,
+      "quest.pos_delta.y": 0.009,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.14,
+      "quest.gripper": 0.7,
+      "quest.enabled": 1,
+      "tracking_state": "tracking",
+      "expected_behavior": "left_arm_move_y_rotate"
+    },
+    {
+      "t_s": 0.1,
+      "arm": "right",
+      "quest.pos_delta.x": 0.0,
+      "quest.pos_delta.y": 0.0,
+      "quest.pos_delta.z": 0.0,
+      "quest.rot_delta.rx": 0.0,
+      "quest.rot_delta.ry": 0.0,
+      "quest.rot_delta.rz": 0.0,
+      "quest.gripper": 0.5,
+      "quest.enabled": 0,
+      "tracking_state": "idle",
+      "expected_behavior": "stop"
+    }
+  ]
+}
