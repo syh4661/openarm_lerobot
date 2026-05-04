@@ -35,10 +35,9 @@
     }
   },
   "teleop": {
-    "type": "quest_openarm_teleop",
+    "type": "quest_spatial_teleop",
     "ip_address": null,
     "controller_side": "right",
-    "urdf_path": "assets/openarm_right.urdf",
     "target_frame": "openarm_hand_tcp",
     "urdf_joint_names": [
       "openarm_joint1",
@@ -48,25 +47,6 @@
       "openarm_joint5",
       "openarm_joint6",
       "openarm_joint7"
-    ],
-    "motor_names": [
-      "joint_1",
-      "joint_2",
-      "joint_3",
-      "joint_4",
-      "joint_5",
-      "joint_6",
-      "joint_7",
-      "gripper"
-    ],
-    "joint_offsets_deg": [
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0
     ],
     "coord_transform_vec": [
       -2.0,
@@ -79,8 +59,7 @@
     "gripper_range_deg": [
       -65.0,
       0.0
-    ],
-    "initial_joint_seed_deg": []
+    ]
   },
   "dataset": {
     "repo_id": "local/openarm_record_TEMPLATE",
