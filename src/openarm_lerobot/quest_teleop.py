@@ -8,6 +8,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
 from math import isfinite
+import json
+import logging
+import os
 from pathlib import Path
 from typing import Any, Protocol, cast
 import warnings
@@ -60,6 +63,8 @@ def _resolve_teleoperator_base() -> type[_TeleoperatorFallbackBase]:
 
 
 Teleoperator = _resolve_teleoperator_base()
+
+logger = logging.getLogger(__name__)
 
 QuestReader: type[object] | None = None
 RobotKinematics: type[object] | None = None
@@ -426,6 +431,33 @@ def _clip_translation_step(position_delta: np.ndarray, max_step_m: float) -> np.
     return (delta / norm) * max_step_m
 
 
+def _quest_debug_enabled() -> bool:
+    raw = os.getenv("QUEST_DEBUG", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on", "debug"}
+
+
+def _jsonable_debug_value(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        return cast(Any, value).tolist()
+    if isinstance(value, np.floating | np.integer):
+        return cast(Any, value).item()
+    if isinstance(value, dict):
+        return {
+            str(key): _jsonable_debug_value(subvalue) for key, subvalue in value.items()
+        }
+    if isinstance(value, tuple | list):
+        return [_jsonable_debug_value(item) for item in value]
+    return value
+
+
+def _log_quest_debug(**payload: object) -> None:
+    if not _quest_debug_enabled():
+        return
+
+    normalized = {key: _jsonable_debug_value(value) for key, value in payload.items()}
+    logger.info("QUEST_DEBUG %s", json.dumps(normalized, sort_keys=True))
+
+
 def read_controller_state(
     reader: _QuestReaderLike, side: str
 ) -> tuple[np.ndarray, dict[str, object]] | None:
@@ -460,12 +492,23 @@ def compute_calibrated_delta(
     except np.linalg.LinAlgError:
         return None
 
-    calibrated = reorder_matrix @ ref_inverse @ raw_matrix
-    if calibrated.shape != (4, 4) or not np.all(np.isfinite(calibrated)):
+    relative = ref_inverse @ raw_matrix
+    if relative.shape != (4, 4) or not np.all(np.isfinite(relative)):
         return None
 
-    position_delta = calibrated[:3, 3].copy()
-    orientation_delta = _rotation_matrix_to_rotvec(calibrated[:3, :3])
+    reorder_rotation = reorder_matrix[:3, :3]
+    relative_rotation = relative[:3, :3]
+    relative_translation = relative[:3, 3]
+
+    if not np.allclose(reorder_rotation.T @ reorder_rotation, np.eye(3), atol=1e-6):
+        return None
+
+    if not np.isclose(float(np.linalg.det(reorder_rotation)), 1.0, atol=1e-6):
+        return None
+
+    position_delta = (reorder_rotation @ relative_translation).copy()
+    calibrated_rotation = reorder_rotation @ relative_rotation @ reorder_rotation.T
+    orientation_delta = _rotation_matrix_to_rotvec(calibrated_rotation)
 
     if orientation_delta is None:
         return None
@@ -721,6 +764,15 @@ class QuestOpenArmTeleop(Teleoperator):
         self._connected = True
         self._state = "connected_uncalibrated"
 
+        _log_quest_debug(
+            event="connect",
+            state=self._state,
+            calibrate=calibrate,
+            initial_joint_seed_deg=list(seed),
+            target_frame=self._config.target_frame,
+            urdf_path=str(self._config.urdf_path),
+        )
+
         warnings.warn(
             "QuestOpenArmTeleop reports .vel/.torque as placeholder 0.0 values, not measurements.",
             stacklevel=2,
@@ -751,6 +803,11 @@ class QuestOpenArmTeleop(Teleoperator):
             self._ref_controller_tf = controller_tf.copy()
             self._grip_was_pressed = False
             self._state = "calibrated_idle"
+            _log_quest_debug(
+                event="calibrate",
+                state=self._state,
+                ref_controller_tf=self._ref_controller_tf,
+            )
             return
 
     def configure(self) -> None:
@@ -772,6 +829,13 @@ class QuestOpenArmTeleop(Teleoperator):
         if controller_state is None:
             self._state = "calibrated_idle"
             self._grip_was_pressed = False
+            _log_quest_debug(
+                event="controller_unavailable",
+                t=monotonic(),
+                state=self._state,
+                grip=False,
+                teleop_output=last_action,
+            )
             return last_action
 
         controller_tf, buttons = controller_state
@@ -779,10 +843,22 @@ class QuestOpenArmTeleop(Teleoperator):
         trigger_gripper = _map_trigger_to_gripper_deg(
             buttons.get("rightTrig"), self._config.gripper_range_deg
         )
+        base_debug_payload = {
+            "t": monotonic(),
+            "state": self._state,
+            "grip": grip_pressed,
+            "controller_raw_pose": controller_tf,
+            "buttons": buttons,
+        }
 
         if not grip_pressed:
             self._state = "calibrated_idle"
             self._grip_was_pressed = False
+            _log_quest_debug(
+                event="idle_hold",
+                **base_debug_payload,
+                teleop_output=last_action,
+            )
             return last_action
 
         if not self._grip_was_pressed:
@@ -807,6 +883,11 @@ class QuestOpenArmTeleop(Teleoperator):
         if calibrated_delta is None or self._ref_ee_pose is None:
             self._state = "calibrated_idle"
             self._grip_was_pressed = True
+            _log_quest_debug(
+                event="delta_unavailable",
+                **base_debug_payload,
+                teleop_output=last_action,
+            )
             return last_action
 
         position_delta, orientation_delta = calibrated_delta
@@ -814,15 +895,12 @@ class QuestOpenArmTeleop(Teleoperator):
             position_delta * float(self._config.spatial_scale),
             float(self._config.max_ee_step_m),
         )
-        rotation_delta = _rotvec_to_rotation_matrix(orientation_delta)
-        if rotation_delta is None:
-            self._state = "calibrated_idle"
-            self._grip_was_pressed = True
-            return last_action
-
         target_pose = self._ref_ee_pose.copy()
         target_pose[:3, 3] = self._ref_ee_pose[:3, 3] + clipped_position
-        target_pose[:3, :3] = rotation_delta @ self._ref_ee_pose[:3, :3]
+        # Safety-first Quest MVP: hold EE orientation fixed while tuning live
+        # Cartesian mapping. Controller rotation currently causes large IK branch
+        # changes and target saturation on real hardware.
+        target_pose[:3, :3] = self._ref_ee_pose[:3, :3]
 
         solved_joints = solve_ik_to_joint_targets(
             self._require_kinematics(),
@@ -832,17 +910,42 @@ class QuestOpenArmTeleop(Teleoperator):
         if solved_joints is None or trigger_gripper is None:
             self._state = "calibrated_idle"
             self._grip_was_pressed = True
+            _log_quest_debug(
+                event="ik_or_gripper_unavailable",
+                **base_debug_payload,
+                calibrated_pos_delta=position_delta,
+                calibrated_rot_delta=orientation_delta,
+                calibrated_pos_delta_norm=float(np.linalg.norm(position_delta)),
+                calibrated_rot_delta_norm=float(np.linalg.norm(orientation_delta)),
+                clipped_pos_delta=clipped_position,
+                target_pose=target_pose,
+                teleop_output=last_action,
+            )
             return last_action
 
         self._last_valid_joints = tuple(float(value) for value in solved_joints)
         self._last_valid_gripper = float(trigger_gripper)
         self._state = "tracking"
         self._grip_was_pressed = True
-        return hold_last_action(
+        action = hold_last_action(
             self._last_valid_joints,
             self._last_valid_gripper,
             self._config.motor_names,
         )
+        _log_quest_debug(
+            event="tracking",
+            **base_debug_payload,
+            calibrated_pos_delta=position_delta,
+            calibrated_rot_delta=orientation_delta,
+            calibrated_pos_delta_norm=float(np.linalg.norm(position_delta)),
+            calibrated_rot_delta_norm=float(np.linalg.norm(orientation_delta)),
+            clipped_pos_delta=clipped_position,
+            target_pose=target_pose,
+            solved_joints=self._last_valid_joints,
+            gripper_deg=self._last_valid_gripper,
+            teleop_output=action,
+        )
+        return action
 
     def send_feedback(self, feedback: dict[str, object]) -> None:
         raise NotImplementedError("Quest teleop feedback is not implemented.")
@@ -855,6 +958,8 @@ class QuestOpenArmTeleop(Teleoperator):
         self._state = "disconnected"
         self._ref_controller_tf = None
         self._grip_was_pressed = False
+
+        _log_quest_debug(event="disconnect", state=self._state)
 
         if reader is None:
             return
