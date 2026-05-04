@@ -12,3 +12,7 @@ episodes/
 videos/
 logs/
 .sisyphus/
+.tmp/
+.idea/
+.claude/settings.local.json
+session-ses_*.md
