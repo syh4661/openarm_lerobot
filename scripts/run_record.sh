@@ -147,6 +147,15 @@ if [ "${OPENARM_RECORD_COMPAT_ONLY:-0}" = "1" ]; then
 fi
 
 source "$ROOT/.venv312/bin/activate"
+if [ -n "${OPENARM_ROS_SETUP:-}" ]; then
+  if [ ! -f "$OPENARM_ROS_SETUP" ]; then
+    echo "[ERROR] OPENARM_ROS_SETUP points to a missing file: $OPENARM_ROS_SETUP" >&2
+    exit 1
+  fi
+  set +u
+  source "$OPENARM_ROS_SETUP"
+  set -u
+fi
 source "$ROOT/scripts/env_rsusb_py312.sh"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
