@@ -279,6 +279,8 @@ class QuestSpatialTeleop(Teleoperator):
             position_delta * float(quest_cfg.spatial_scale),
             float(quest_cfg.max_ee_step_m),
         )
+        scaled_position = position_delta * float(quest_cfg.spatial_scale)
+        clipped_by_max_ee_step = not np.allclose(scaled_position, clipped_position)
         self._state = "tracking"
         self._grip_was_pressed = True
         action = {
@@ -298,7 +300,10 @@ class QuestSpatialTeleop(Teleoperator):
             calibrated_rot_delta=orientation_delta,
             calibrated_pos_delta_norm=float(np.linalg.norm(position_delta)),
             calibrated_rot_delta_norm=float(np.linalg.norm(orientation_delta)),
+            scaled_pos_delta=scaled_position,
             clipped_pos_delta=clipped_position,
+            clipped_by_max_ee_step=clipped_by_max_ee_step,
+            max_ee_step_m=float(quest_cfg.max_ee_step_m),
             teleop_output=action,
         )
         return action

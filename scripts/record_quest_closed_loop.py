@@ -80,6 +80,7 @@ QUEST_OPENARM_TARGET_FRAME = getattr(quest_teleop_module, "QUEST_OPENARM_TARGET_
 QUEST_OPENARM_URDF_JOINT_NAMES = getattr(
     quest_teleop_module, "QUEST_OPENARM_URDF_JOINT_NAMES"
 )
+_log_quest_debug = getattr(quest_teleop_module, "_log_quest_debug")
 SafeOpenArmFollower = getattr(safe_followers_module, "SafeOpenArmFollower")
 SafeOpenArmFollowerConfig = getattr(safe_followers_module, "SafeOpenArmFollowerConfig")
 
@@ -100,6 +101,42 @@ class NoSendActionRobot:
             sorted(action.keys()),
         )
         return action
+
+
+class QuestDebugRobotActionProcessor:
+    def __init__(self, processor: Any):
+        self._processor = processor
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._processor, name)
+
+    def __call__(self, data: Any) -> Any:
+        output = self._processor(data)
+        _log_quest_debug(
+            event="closed_loop_joint_command",
+            commanded_joint_angles_deg=_ordered_joint_positions(output),
+        )
+        return output
+
+
+def _ordered_joint_positions(action: dict[str, Any]) -> list[float | None]:
+    values: list[float | None] = []
+    for motor_name in QUEST_OPENARM_MOTOR_NAMES:
+        raw = action.get(f"{motor_name}.pos")
+        try:
+            values.append(float(raw))
+        except (TypeError, ValueError):
+            values.append(None)
+    return values
+
+
+def _disconnect_if_connected(device: Any, *, label: str) -> None:
+    if not bool(getattr(device, "is_connected", False)):
+        return
+    try:
+        device.disconnect()
+    except Exception:
+        logger.exception("Failed to disconnect %s cleanly.", label)
 
 
 def parse_args() -> argparse.Namespace:
@@ -249,6 +286,7 @@ def main() -> None:
     teleop_action_processor, robot_action_processor, robot_observation_processor = (
         make_processors(kinematics)
     )
+    robot_action_processor = QuestDebugRobotActionProcessor(robot_action_processor)
     dataset = make_dataset(
         raw, robot, teleop, teleop_action_processor, robot_observation_processor
     )
@@ -282,12 +320,16 @@ def main() -> None:
             robot_action_processor=robot_action_processor,
             robot_observation_processor=robot_observation_processor,
         )
+        logger.info("Record loop finished with events=%s", events)
+        if dataset.has_pending_frames():
+            logger.info("Saving pending Quest closed-loop episode frames.")
+            dataset.save_episode()
+        else:
+            logger.warning("Record loop finished without pending dataset frames.")
     finally:
-        try:
-            teleop.disconnect()
-        finally:
-            robot.disconnect()
-            dataset.finalize()
+        _disconnect_if_connected(teleop, label="Quest teleop")
+        _disconnect_if_connected(robot, label="OpenArm robot")
+        dataset.finalize()
 
 
 if __name__ == "__main__":
