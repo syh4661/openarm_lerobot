@@ -6,8 +6,26 @@ import argparse
 from importlib import import_module
 import json
 import logging
+import os
 from pathlib import Path
+import sys
 from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+for source_path in (REPO_ROOT / "src", REPO_ROOT.parent / "lerobot" / "src"):
+    if source_path.exists():
+        sys.path.insert(0, str(source_path))
+if (REPO_ROOT.parent / "openarm_description" / "package.xml").exists():
+    ros_package_paths = [
+        path for path in os.environ.get("ROS_PACKAGE_PATH", "").split(os.pathsep) if path
+    ]
+    workspace_path = str(REPO_ROOT.parent)
+    if workspace_path not in ros_package_paths:
+        os.environ["ROS_PACKAGE_PATH"] = os.pathsep.join(
+            [workspace_path, *ros_package_paths]
+        )
+
 
 feature_utils_module = import_module("lerobot.datasets.feature_utils")
 dataset_module = import_module("lerobot.datasets.lerobot_dataset")
