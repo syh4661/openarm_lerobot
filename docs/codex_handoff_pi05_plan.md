@@ -32,12 +32,18 @@ This document is the **executable plan**. It encodes facts that were verified at
 - Test script signatures are verified:
   - `scripts/test_quest_ik_roundtrip.py --urdf <path> --target-frame <frame>`
   - `scripts/test_quest_processor_steps.py --urdf <path>`
-- Phase 1 no-send translation-axis validation is passed on temp configs, but Phase 1 is **not source-locked yet** because the operator must review the final mapping and explicitly approve editing `configs/record_quest_right_nocam.json`.
+- Phase 1/2 no-send translation-axis validation is passed and source-locked in `configs/record_quest_right_nocam.json`.
 - A 5s stationary no-send test at `spatial_scale=0.01`, `max_ee_step_m=0.005` passed with `violating_cmd_frames=0`. This makes a fixed IK seed/calibration failure less likely; saturation appears motion-axis/sign dependent.
 - Physical `+X` failed on the source mapping `[-2, -1, -3, 4]` with `joint_1` saturation, then passed with the SO(3)-valid sign candidate `[-2, +1, +3, 4]`.
 - Physical `+Y` saturated `joint_1` across sign and simple axis-swap candidates. Code inspection confirmed Quest `rot_delta` is not ignored in the closed-loop processor path: `MapQuestActionToRobotAction` emits `target_w*`, `EEReferenceAndDelta` applies it to the target pose, and IK solves the full pose. A new `QuestSpatialTeleopConfig.zero_orientation_delta` option is available for translation-only no-send isolation.
-- Final Phase 1 no-send translation-only candidate is `coord_transform_vec: [2.0, 1.0, -3.0, 4.0]`, `zero_orientation_delta: true`, `spatial_scale: 0.01`, `max_ee_step_m: 0.005`. It passed physical `+X`, `+Y`, and `+Z` 5s no-send tests with `violating_cmd_frames=0` and `clipped=0`.
-- Continue from Phase 1. Do not edit `configs/record_quest_right_nocam.json` or run live until Phase 1 passes.
+- Final source-locked right-arm config is `coord_transform_vec: [2.0, 1.0, -3.0, 4.0]`, `zero_orientation_delta: true`, `spatial_scale: 0.1`, `max_ee_step_m: 0.02`.
+- Root cause of the earlier `joint_1=-80 deg` saturation was the upstream LeRobot `RobotKinematics` solving only a frame task for a 7-DOF arm. `src/openarm_lerobot/kinematics.py` now adds `OpenArmKinematics`, a local subclass with a weak placo posture task (`posture_weight=0.01`) so the 1-DOF redundancy stays near home without patching LeRobot.
+- Posture IK validation:
+  - 5s stationary no-send: `violating_cmd_frames=0`, clipped=0, `joint_1` range `0.000121 deg` (`/tmp/posture_stationary_1778165423.log`).
+  - 20s axis no-send: `violating_cmd_frames=0`, clipped=0, `joint_1` range `0.000413 deg` (`/tmp/posture_axis_1778165467.log`).
+  - B1 scale no-send (`spatial_scale=0.05`, `max_ee_step_m=0.01`): `violating_cmd_frames=0`, clipped 36/754 ~= 4.8% (`/tmp/posture_b1_1778165538.log`).
+  - B2 scale no-send (`spatial_scale=0.1`, `max_ee_step_m=0.02`): `violating_cmd_frames=0`, clipped 5/851 ~= 0.6% (`/tmp/posture_b2_1778165613.log`).
+- `SafeOpenArmFollower.send_action()` now rejects joint-limit violations before LeRobot's clipping path, logs the payload at ERROR, torque-disables the arm, and raises. Continue from Phase 3 preparation. Do not run live until the operator reviews the final no-send evidence and replies with explicit `GO Phase 3 live`.
 
 ---
 
@@ -79,7 +85,7 @@ This document is the **executable plan**. It encodes facts that were verified at
    - Dataset path collisions remain real: re-running with the same generated TS or repo_id throws `FileExistsError` (`dataset_metadata.py:621`). Always generate fresh `repo_id` + `root` per run.
 
 8. **Config files**:
-   - `configs/record_quest_right_nocam.json` — single right arm, no cameras. Currently has `coord_transform_vec: [-2.0, -1.0, -3.0, 4.0]`, `spatial_scale: 1.0`, `max_ee_step_m: 0.05`. **Both `coord_transform_vec` and the scales are unsafe for live use**. Use temp configs under `/tmp` until Phase 1/2 gates pass.
+   - `configs/record_quest_right_nocam.json` — single right arm, no cameras. Source-locked after no-send B2 with `coord_transform_vec: [2.0, 1.0, -3.0, 4.0]`, `zero_orientation_delta: true`, `spatial_scale: 0.1`, `max_ee_step_m: 0.02`. Still use temp configs for further tuning; live remains blocked until explicit operator GO.
    - `configs/record_full.json` — bimanual with cameras. Use as the structural template for the bimanual Quest config you must create.
    - `configs/realsense_3cam_mapping.yaml` — RealSense serials.
    - **Camera serials** (per `docs/syhlabtop_handover.md`): right wrist `230322273311`, left wrist `315122270766`, chest `234322070493`.

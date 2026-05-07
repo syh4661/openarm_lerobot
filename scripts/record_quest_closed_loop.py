@@ -30,13 +30,13 @@ if (REPO_ROOT.parent / "openarm_description" / "package.xml").exists():
 feature_utils_module = import_module("lerobot.datasets.feature_utils")
 dataset_module = import_module("lerobot.datasets.lerobot_dataset")
 pipeline_features_module = import_module("lerobot.datasets.pipeline_features")
-kinematics_module = import_module("lerobot.model.kinematics")
 processor_module = import_module("lerobot.processor")
 converters_module = import_module("lerobot.processor.converters")
 robot_kinematic_processor_module = import_module(
     "lerobot.robots.so_follower.robot_kinematic_processor"
 )
 record_module = import_module("lerobot.scripts.lerobot_record")
+openarm_kinematics_module = import_module("openarm_lerobot.kinematics")
 quest_processor_module = import_module("openarm_lerobot.quest_processor")
 quest_spatial_teleop_module = import_module("openarm_lerobot.quest_spatial_teleop")
 quest_teleop_module = import_module("openarm_lerobot.quest_teleop")
@@ -48,7 +48,7 @@ aggregate_pipeline_dataset_features = getattr(
     pipeline_features_module, "aggregate_pipeline_dataset_features"
 )
 create_initial_features = getattr(pipeline_features_module, "create_initial_features")
-RobotKinematics = getattr(kinematics_module, "RobotKinematics")
+OpenArmKinematics = getattr(openarm_kinematics_module, "OpenArmKinematics")
 RobotProcessorPipeline = getattr(processor_module, "RobotProcessorPipeline")
 observation_to_transition = getattr(converters_module, "observation_to_transition")
 robot_action_observation_to_transition = getattr(
@@ -186,10 +186,11 @@ def make_teleop_config(raw: dict[str, Any]) -> Any:
 
 
 def make_kinematics(urdf_path: Path) -> Any:
-    return RobotKinematics(
+    return OpenArmKinematics(
         urdf_path=str(urdf_path),
         target_frame_name=QUEST_OPENARM_TARGET_FRAME,
         joint_names=list(QUEST_OPENARM_URDF_JOINT_NAMES),
+        posture_weight=0.01,
     )
 
 

@@ -39,6 +39,36 @@ _SAFE_SHUTDOWN_RETRIES = 3
 _SAFE_SHUTDOWN_DELAY_S = 0.05
 _SAFE_SHUTDOWN_RECV_TIMEOUT_S = 0.1
 _SAFE_SHUTDOWN_SETTLE_S = 0.2
+_JOINT_LIMIT_TOLERANCE_DEG = 1e-6
+
+
+def _joint_limit_violations(
+    action: RobotAction, joint_limits: dict[str, tuple[float, float] | list[float]]
+) -> list[dict[str, float | str]]:
+    violations: list[dict[str, float | str]] = []
+    for key, raw_position in action.items():
+        if not key.endswith(".pos"):
+            continue
+
+        motor_name = key.removesuffix(".pos")
+        if motor_name not in joint_limits:
+            continue
+
+        position = float(raw_position)
+        min_limit, max_limit = joint_limits[motor_name]
+        if (
+            position < min_limit - _JOINT_LIMIT_TOLERANCE_DEG
+            or position > max_limit + _JOINT_LIMIT_TOLERANCE_DEG
+        ):
+            violations.append(
+                {
+                    "motor": motor_name,
+                    "command_deg": position,
+                    "min_deg": float(min_limit),
+                    "max_deg": float(max_limit),
+                }
+            )
+    return violations
 
 
 class _SafeOpenArmBusShutdownMixin:
@@ -218,6 +248,32 @@ class SafeOpenArmFollower(_SafeOpenArmBusShutdownMixin, OpenArmFollower):
     def __init__(self, config: SafeOpenArmFollowerConfig):
         super().__init__(config)
         _reuse_calibration_namespace(self, OpenArmFollower.name)
+
+    @check_if_not_connected
+    def send_action(
+        self,
+        action: RobotAction,
+        custom_kp: dict[str, float] | None = None,
+        custom_kd: dict[str, float] | None = None,
+    ) -> RobotAction:
+        violations = _joint_limit_violations(action, self.config.joint_limits)
+        if violations:
+            payload = {"robot": str(self), "violations": violations}
+            logger.error(
+                "Aborting OpenArm send_action: joint limit violation %s", payload
+            )
+            try:
+                self._safe_disable_all_motors()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"OpenArm send_action aborted for joint limit violation, "
+                    f"but torque-disable failed: {payload}"
+                ) from exc
+            raise RuntimeError(
+                f"OpenArm send_action aborted for joint limit violation: {payload}"
+            )
+
+        return super().send_action(action, custom_kp=custom_kp, custom_kd=custom_kd)
 
     @check_if_not_connected
     def disconnect(self):
