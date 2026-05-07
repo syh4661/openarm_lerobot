@@ -215,7 +215,9 @@ def make_dataset(
 def main() -> None:
     args = parse_args()
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
     )
 
     raw = load_raw_config(args.config)
