@@ -32,11 +32,11 @@ This document is the **executable plan**. It encodes facts that were verified at
 - Test script signatures are verified:
   - `scripts/test_quest_ik_roundtrip.py --urdf <path> --target-frame <frame>`
   - `scripts/test_quest_processor_steps.py --urdf <path>`
-- Phase 1/2 no-send translation-axis validation is passed and source-locked in `configs/record_quest_right_nocam.json`.
+- Phase 1/2 no-send translation-axis validation passed before the bus-map correction. Reinterpret that evidence as a **right Quest controller -> physical left arm (`can0`)** result, not the final desired controller/arm pairing.
 - A 5s stationary no-send test at `spatial_scale=0.01`, `max_ee_step_m=0.005` passed with `violating_cmd_frames=0`. This makes a fixed IK seed/calibration failure less likely; saturation appears motion-axis/sign dependent.
 - Physical `+X` failed on the source mapping `[-2, -1, -3, 4]` with `joint_1` saturation, then passed with the SO(3)-valid sign candidate `[-2, +1, +3, 4]`.
 - Physical `+Y` saturated `joint_1` across sign and simple axis-swap candidates. Code inspection confirmed Quest `rot_delta` is not ignored in the closed-loop processor path: `MapQuestActionToRobotAction` emits `target_w*`, `EEReferenceAndDelta` applies it to the target pose, and IK solves the full pose. A new `QuestSpatialTeleopConfig.zero_orientation_delta` option is available for translation-only no-send isolation.
-- Final source-locked right-arm config is `coord_transform_vec: [2.0, 1.0, -3.0, 4.0]`, `zero_orientation_delta: true`, `spatial_scale: 0.1`, `max_ee_step_m: 0.02`.
+- Best-known candidate from that accidental right-controller-to-left-arm path is `coord_transform_vec: [2.0, 1.0, -3.0, 4.0]`, `zero_orientation_delta: true`, `spatial_scale: 0.1`, `max_ee_step_m: 0.02`. Treat it as a candidate for final left/right configs until no-send axis validation re-runs with the intended controller.
 - Root cause of the earlier `joint_1=-80 deg` saturation was the upstream LeRobot `RobotKinematics` solving only a frame task for a 7-DOF arm. `src/openarm_lerobot/kinematics.py` now adds `OpenArmKinematics`, a local subclass with a weak placo posture task (`posture_weight=0.01`) so the 1-DOF redundancy stays near home without patching LeRobot.
 - Posture IK validation:
   - 5s stationary no-send: `violating_cmd_frames=0`, clipped=0, `joint_1` range `0.000121 deg` (`/tmp/posture_stationary_1778165423.log`).
@@ -62,12 +62,12 @@ This document is the **executable plan**. It encodes facts that were verified at
    export ROS_PACKAGE_PATH="/home/syhlabtop/workspace:${ROS_PACKAGE_PATH:-}"
    ```
 
-3. **CAN bus map**: `can0` = right arm (8 motors, recv IDs 0x11–0x18). `can1` = left arm (8 motors). `can2`/`can3` empty. Diagnostic recipe in case of dropped motor:
+3. **CAN bus map**: `can0` = physical **left** arm, `can1` = physical **right** arm. Verified by direct LED ENABLE/DISABLE tests on 2026-05-08; see `/tmp/bus_arm_mapping.md` and `/tmp/bus_arm_decision.md`. Both arms use motor IDs `0x01..0x08` and recv IDs `0x11..0x18`; arm identity comes from CAN bus isolation, not motor ID differences. `can2`/`can3` are leader/unused in this workflow unless explicitly configured. Diagnostic recipe in case of dropped motor:
    ```python
    # /tmp/scan_can.py — see git history this session for the full script
    ```
 
-4. **Hardware lesson learned**: a "fault" red LED on a single motor that survives power-cycle usually means the motor controller is permanently faulted (was `joint_2` on the original right arm). Resolution this session: physical arm swap. Both arms now respond on can0/can1.
+4. **Hardware lesson learned**: a "fault" red LED on a single motor that survives power-cycle usually means the motor controller is permanently faulted (was `joint_2` on the original right arm). Resolution this session: physical arm swap. Both arms now respond on can0/can1, but the verified map is `can0=left`, `can1=right`.
 
 5. **Calibration**: `SafeOpenArmFollower` reuses calibration from the non-`safe_*` namespace via `_reuse_calibration_namespace` (`src/openarm_lerobot/safe_followers.py:163`). Existing files:
    - `~/.cache/huggingface/lerobot/calibration/robots/openarm_follower/openarm_right_follower.json`
@@ -85,7 +85,8 @@ This document is the **executable plan**. It encodes facts that were verified at
    - Dataset path collisions remain real: re-running with the same generated TS or repo_id throws `FileExistsError` (`dataset_metadata.py:621`). Always generate fresh `repo_id` + `root` per run.
 
 8. **Config files**:
-   - `configs/record_quest_right_nocam.json` — single right arm, no cameras. Source-locked after no-send B2 with `coord_transform_vec: [2.0, 1.0, -3.0, 4.0]`, `zero_orientation_delta: true`, `spatial_scale: 0.1`, `max_ee_step_m: 0.02`. Still use temp configs for further tuning; live remains blocked until explicit operator GO.
+   - `configs/record_quest_left_nocam.json` — left Quest controller driving the physical left arm on `can0`, no cameras. The robot `id` remains `openarm_right_follower` temporarily for calibration-file continuity; clean this namespace deliberately later. Must pass no-send axis validation before live.
+   - `configs/record_quest_right_nocam.json` — right Quest controller driving the physical right arm on `can1`, no cameras. Uses `id: openarm_right_follower_can1_unvalidated` so it cannot silently reuse the left-arm legacy calibration. Must pass calibration review and no-send axis validation before live.
    - `configs/record_full.json` — bimanual with cameras. Use as the structural template for the bimanual Quest config you must create.
    - `configs/realsense_3cam_mapping.yaml` — RealSense serials.
    - **Camera serials** (per `docs/syhlabtop_handover.md`): right wrist `230322273311`, left wrist `315122270766`, chest `234322070493`.
@@ -248,7 +249,7 @@ Start from the safe values validated in Phase 1 (`spatial_scale=0.03`, `max_ee_s
 
 ---
 
-## Phase 3 — Right arm small live test (Step 3 of handover)
+## Phase 3 — Single-arm final-controller live tests (Step 3 of handover)
 
 **Goal**: first time the real arm moves under teleop, with operator hand on e-stop.
 
@@ -256,10 +257,10 @@ Pre-flight:
 - Workspace clear of obstacles, no humans within arm reach.
 - E-stop in operator's free hand, tested.
 - `spatial_scale ≤ 0.3`, `max_ee_step_m ≤ 0.03` (verify in config!).
-- Camera off (still using `record_quest_right_nocam.json`).
+- Camera off. Use `record_quest_left_nocam.json` for left controller -> left arm, or `record_quest_right_nocam.json` for right controller -> right arm.
 - Robot in safe rest pose.
 - Confirm gripper behavior: `rightTrig` commands gripper. If unpressed trigger would put the gripper in an unsafe state for the test, resolve that before live.
-- Operator must explicitly say `GO Phase 3 live` after reviewing the final no-send log.
+- Operator must explicitly say `GO Phase 3 Run 2 LEFT` or `GO Phase 3 Run 2 RIGHT` after reviewing that arm's final no-send log and the bus mapping decision.
 
 ```bash
 TS=$(date +%s)
@@ -274,7 +275,7 @@ Operator: 10 seconds of small, slow Quest motions. Stop instantly on any unexpec
 After run: review log for any `clipped` flags from `max_ee_step_m`, joint-limit hits, or torque warnings. Check robot is still at sane pose.
 
 **Failure handling**:
-- Sudden lurch: hit e-stop, capture log, lower `max_ee_step_m` to 0.02, retry.
+- Sudden lurch: hit e-stop, capture log, lower `max_ee_step_m` to 0.02, retry only after operator review.
 - Any motor goes red mid-run: power-cycle that arm only after operator confirms.
 - If joint limit clipping happens: `coord_transform_vec` may still be off — go back to Phase 2.
 
@@ -331,18 +332,18 @@ Implementation sequence, with regression tests after each step:
 
 Structural template: `configs/record_full.json` (the bimanual + cameras config). Copy:
 - `robot.type` = `safe_bi_openarm_follower`
-- `robot.left_arm_config.port` = `can1`, `right_arm_config.port` = `can0`
-- Per-arm `motor_config`, `position_kp`, `position_kd`, `joint_limits` (right arm matches existing right-only config; left arm mirror — check `record_full.json` for actual left values, do not invent)
+- `robot.left_arm_config.port` = `can0`, `right_arm_config.port` = `can1`
+- Per-arm `motor_config`, `position_kp`, `position_kd`, `joint_limits` (left arm matches the currently tuned single-arm config; right arm needs separate validation)
 
 Teleop side: bimanual variant of `quest_spatial_teleop`. Check `src/openarm_lerobot/quest_spatial_teleop.py` for whether `controller_side="bimanual"` is supported, or if you need separate left + right teleops both fed from one Quest reader. If the latter, look for `bi_quest_*` or similar in `quest_teleop.py` / `quest_processor.py`. Add the smallest compatible abstraction; do not change right-only behavior.
 
 Initial values:
-- `right_arm.coord_transform_vec` = the value tuned in Phase 2.
-- `left_arm.coord_transform_vec` = mirror candidate (often: flip the sign on the y-mapping). Tune separately in Phase 4.5 below.
+- `left_arm.coord_transform_vec` = candidate `[2.0, 1.0, -3.0, 4.0]`, but retune with the left Quest controller.
+- `right_arm.coord_transform_vec` = candidate `[2.0, 1.0, -3.0, 4.0]` or mirror candidate. Tune separately with the right Quest controller before live; do not assume it is correct.
 - `spatial_scale` = whatever Phase 3 settled on.
 
-### 4.5 Left arm tuning (mirror of Phases 1–3)
-Operator uses **left** Quest controller. Repeat the dry-run + axis-tuning + small-live-test cycle for the left arm. Expect `coord_transform_vec` to be a mirror; verify don't assume.
+### 4.5 Per-arm tuning
+Repeat the dry-run + axis-tuning + small-live-test cycle for both final pairings: left Quest controller -> left arm on `can0`, and right Quest controller -> right arm on `can1`. Expect mirror candidates may work; verify, do not assume.
 
 **Operator gate**: ask for explicit `GO Phase 5`.
 

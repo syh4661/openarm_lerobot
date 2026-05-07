@@ -12,7 +12,8 @@ Editable source-of-truth for recording presets and RealSense camera mapping.
 | RGB camera recording | `record_rgb.json` | Chest + wrist RGB streams |
 | Depth-enabled recording | `record_full.json` | Wrist depth enabled |
 | Fixture/compat config | `record_rgb_head_fixture.json` | Camera-key substitution fixture |
-| Quest right-arm recording | `record_quest_right_nocam.json` | Single-arm Quest, no camera |
+| Quest left-arm recording | `record_quest_left_nocam.json` | Left Quest controller to physical left arm on `can0`; legacy calibration id retained |
+| Quest right-arm recording | `record_quest_right_nocam.json` | Right Quest controller to physical right arm on `can1`; calibration/no-send validation required |
 | RealSense mapping | `realsense_3cam_mapping.yaml` | Serials, ports, RSUSB notes |
 
 ## CONVENTIONS
@@ -21,6 +22,8 @@ Editable source-of-truth for recording presets and RealSense camera mapping.
 - Camera keys should converge on `left_wrist`, `right_wrist`, `chest`; `wrist_a`/`wrist_b` are transitional mapping names.
 - Dataset defaults use local IDs like `local/<run_name>` and local roots under `data/<run_name>`.
 - `record_quest_right_nocam.json` is a different schema from bimanual camera presets: `safe_openarm_follower` + `quest_spatial_teleop`.
+- Verified bus-to-arm map from 2026-05-08 LED ENABLE test: `can0` is the physical left arm, `can1` is the physical right arm. Both arms use motor IDs `0x01..0x08`; do not change motor IDs to swap arms.
+- Final controller target is left Quest controller -> left arm and right Quest controller -> right arm. Earlier tuning used the right Quest controller against the left arm during bus-map discovery, so both final paths need no-send axis validation before live.
 - Keep joint order, motor IDs, KP/KD arrays, and joint limits aligned in the Quest config.
 
 ## ANTI-PATTERNS

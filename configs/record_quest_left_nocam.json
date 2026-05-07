@@ -1,9 +1,9 @@
 {
   "robot": {
     "type": "safe_openarm_follower",
-    "id": "openarm_right_follower_can1_unvalidated",
-    "port": "can1",
-    "side": "right",
+    "id": "openarm_right_follower",
+    "port": "can0",
+    "side": "left",
     "can_interface": "socketcan",
     "use_can_fd": true,
     "can_bitrate": 1000000,
@@ -25,7 +25,7 @@
     "position_kd": [5.0, 5.0, 3.0, 5.0, 0.3, 0.3, 0.3, 0.3],
     "joint_limits": {
       "joint_1": [-75.0, 75.0],
-      "joint_2": [-9.0, 90.0],
+      "joint_2": [-90.0, 9.0],
       "joint_3": [-85.0, 85.0],
       "joint_4": [0.0, 135.0],
       "joint_5": [-85.0, 85.0],
@@ -37,7 +37,7 @@
   "teleop": {
     "type": "quest_spatial_teleop",
     "ip_address": null,
-    "controller_side": "right",
+    "controller_side": "left",
     "target_frame": "openarm_hand_tcp",
     "urdf_joint_names": [
       "openarm_joint1",

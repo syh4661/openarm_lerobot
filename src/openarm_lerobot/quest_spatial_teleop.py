@@ -57,10 +57,7 @@ def _validate_spatial_contract(config: QuestSpatialTeleopConfig) -> None:
             "QuestSpatialTeleopConfig is USB-only; ip_address must be None."
         )
 
-    if _normalize_controller_side(cfg.controller_side) != "r":
-        raise ValueError(
-            "QuestSpatialTeleopConfig is right-controller-only; controller_side must be 'right'."
-        )
+    _normalize_controller_side(cfg.controller_side)
 
     if cfg.target_frame != QUEST_OPENARM_TARGET_FRAME:
         raise ValueError(f"target_frame must be {QUEST_OPENARM_TARGET_FRAME!r}.")
@@ -111,6 +108,13 @@ class QuestSpatialTeleopConfig(TeleoperatorConfig):
             raise ValueError("max_ee_step_m must be a positive number.")
 
         _validate_spatial_contract(self)
+
+
+def _controller_command_keys(controller_side: str) -> tuple[str, str]:
+    side = _normalize_controller_side(controller_side)
+    if side == "l":
+        return "LG", "leftTrig"
+    return "RG", "rightTrig"
 
 
 class QuestSpatialTeleop(Teleoperator):
@@ -229,9 +233,10 @@ class QuestSpatialTeleop(Teleoperator):
             return action
 
         controller_tf, buttons = controller_state
-        grip_pressed = _is_pressed(buttons.get("RG"))
+        grip_key, trigger_key = _controller_command_keys(quest_cfg.controller_side)
+        grip_pressed = _is_pressed(buttons.get(grip_key))
         trigger_gripper = _map_trigger_to_gripper_deg(
-            buttons.get("rightTrig"), quest_cfg.gripper_range_deg
+            buttons.get(trigger_key), quest_cfg.gripper_range_deg
         )
         normalized_gripper = self._normalize_gripper(trigger_gripper)
         base_debug_payload = {

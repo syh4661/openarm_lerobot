@@ -3,13 +3,13 @@
     "type": "safe_bi_openarm_follower",
     "id": "openarm_bimanual_follower",
     "left_arm_config": {
-      "port": "can1",
+      "port": "can0",
       "side": "left",
       "use_can_fd": true,
       "cameras": {}
     },
     "right_arm_config": {
-      "port": "can0",
+      "port": "can1",
       "side": "right",
       "use_can_fd": true,
       "cameras": {}
