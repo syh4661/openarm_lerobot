@@ -190,7 +190,7 @@ def make_kinematics(urdf_path: Path) -> Any:
         urdf_path=str(urdf_path),
         target_frame_name=QUEST_OPENARM_TARGET_FRAME,
         joint_names=list(QUEST_OPENARM_URDF_JOINT_NAMES),
-        posture_weight=0.01,
+        posture_weight=0.005,
     )
 
 
