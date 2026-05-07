@@ -90,6 +90,7 @@ class QuestSpatialTeleopConfig(TeleoperatorConfig):
     )
     spatial_scale: float = QUEST_OPENARM_SPATIAL_SCALE
     max_ee_step_m: float = QUEST_OPENARM_MAX_EE_STEP_M
+    zero_orientation_delta: bool = False
     gripper_range_deg: tuple[float, ...] = field(
         default_factory=lambda: QUEST_OPENARM_GRIPPER_RANGE_DEG
     )
@@ -274,7 +275,12 @@ class QuestSpatialTeleop(Teleoperator):
             )
             return action
 
-        position_delta, orientation_delta = calibrated_delta
+        position_delta, raw_orientation_delta = calibrated_delta
+        orientation_delta = (
+            np.zeros(3, dtype=float)
+            if bool(quest_cfg.zero_orientation_delta)
+            else raw_orientation_delta
+        )
         clipped_position = _clip_translation_step(
             position_delta * float(quest_cfg.spatial_scale),
             float(quest_cfg.max_ee_step_m),
@@ -297,9 +303,11 @@ class QuestSpatialTeleop(Teleoperator):
             event="spatial_tracking",
             **base_debug_payload,
             calibrated_pos_delta=position_delta,
-            calibrated_rot_delta=orientation_delta,
+            calibrated_rot_delta=raw_orientation_delta,
+            emitted_rot_delta=orientation_delta,
+            zero_orientation_delta=bool(quest_cfg.zero_orientation_delta),
             calibrated_pos_delta_norm=float(np.linalg.norm(position_delta)),
-            calibrated_rot_delta_norm=float(np.linalg.norm(orientation_delta)),
+            calibrated_rot_delta_norm=float(np.linalg.norm(raw_orientation_delta)),
             scaled_pos_delta=scaled_position,
             clipped_pos_delta=clipped_position,
             clipped_by_max_ee_step=clipped_by_max_ee_step,
