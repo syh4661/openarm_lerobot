@@ -385,6 +385,15 @@ def extract_cfg_metadata(cfg: object, report: IsaacReport) -> None:
         report["tcp_frame_discovered"] = True
         report["metadata_sources"].append("isaac_env_cfg.scene.robot.body_names")
 
+    if not report["tcp_frame_discovered"]:
+        for _cmd_attr in ("ee_pose", "ee_goal", "target_pose"):
+            _ee_body = safe_getattr_chain(cfg, ("commands", _cmd_attr, "body_name"))
+            if isinstance(_ee_body, str) and _ee_body:
+                report["tcp_frame"] = _ee_body
+                report["tcp_frame_discovered"] = True
+                report["metadata_sources"].append(f"isaac_env_cfg.commands.{_cmd_attr}.body_name")
+                break
+
     decimation = first_number(getattr(cfg, "decimation", None))
     sim_dt = first_number(safe_getattr_chain(cfg, ("sim", "dt")))
     if decimation and sim_dt and sim_dt > 0:

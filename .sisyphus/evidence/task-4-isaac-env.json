@@ -1,0 +1,66 @@
+{
+  "asset_path": null,
+  "availability": {
+    "env": "available",
+    "gym": "available:gymnasium",
+    "isaac_lab": "available:isaaclab.app",
+    "openarm_isaac": "available:openarm"
+  },
+  "bootstrap": {
+    "inserted_sys_paths": [
+      "/home/syhai/workspace/openarm_lerobot/src"
+    ],
+    "repo_root": "/home/syhai/workspace/openarm_lerobot",
+    "ros_package_path": "",
+    "ros_package_path_updated": false
+  },
+  "control_frequency_hz": 30.0,
+  "env_name": "Isaac-Reach-OpenArm-v0",
+  "errors": [],
+  "gate_name": "inspect_openarm_isaac_env",
+  "gripper_action": {
+    "command_field": "quest.gripper",
+    "output_field": "gripper_vel",
+    "range_deg": [
+      -65.0,
+      0.0
+    ],
+    "source": "fallback_config",
+    "type": "normalized_to_degrees"
+  },
+  "headless_instantiated": true,
+  "headless_supported": true,
+  "joint_names": [
+    "openarm_joint1",
+    "openarm_joint2",
+    "openarm_joint3",
+    "openarm_joint4",
+    "openarm_joint5",
+    "openarm_joint6",
+    "openarm_joint7",
+    "openarm_finger_joint.*"
+  ],
+  "joint_names_discovered": true,
+  "matching_env_names": [
+    "Isaac-Lift-Cube-OpenArm-v0",
+    "Isaac-Open-Drawer-OpenArm-v0",
+    "Isaac-Reach-OpenArm-Bi-v0",
+    "Isaac-Reach-OpenArm-v0"
+  ],
+  "metadata_sources": [
+    "configs/record_quest_right_nocam.json",
+    "docs/quest_isaac_real_control_contract.md",
+    "isaac_env_cfg.scene.robot.init_state.joint_pos",
+    "isaac_env_cfg.commands.ee_pose.body_name",
+    "isaac_env_cfg.sim.dt_decimation"
+  ],
+  "reason": "pass",
+  "requested_env_name": "Isaac-Reach-OpenArm-v0",
+  "schema_version": 1,
+  "status": "pass",
+  "tcp_frame": "openarm_hand",
+  "tcp_frame_discovered": true,
+  "warnings": [
+    "Headless instantiation was not requested; static registry/config inspection only."
+  ]
+}
