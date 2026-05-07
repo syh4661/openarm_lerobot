@@ -475,86 +475,142 @@ def main() -> int:
     report = base_report(args, bootstrap)
 
     try:
-        app_launcher, gym_module = import_isaac_symbols(report)
+        app_launcher_cls, gym_module = import_isaac_symbols(report)
     except RuntimeError as exc:
         return fail_report(args.report, report, "isaac_unavailable", str(exc))
+    if app_launcher_cls is None:
+        return fail_report(args.report, report, "isaac_unavailable", "Isaac Lab AppLauncher is unavailable")
 
+    app_launcher_instance = None
+    simulation_app = None
     try:
-        import_openarm_registration(report)
-    except RuntimeError as exc:
-        return fail_report(args.report, report, "openarm_isaac_unavailable", str(exc))
-
-    discovered_envs = enumerate_openarm_envs(gym_module, args.include_play)
-    report["matching_env_names"] = discovered_envs
-
-    if args.env_name not in discovered_envs:
-        if discovered_envs:
-            report["env_name"] = discovered_envs[0]
-            report["warnings"].append(
-                f"Requested env {args.env_name!r} was not registered; reporting first discovered OpenArm env {discovered_envs[0]!r}."
-            )
-        report["availability"]["env"] = "missing"
-        return fail_report(
-            args.report,
-            report,
-            "env_unavailable",
-            f"Requested OpenArm Isaac env {args.env_name!r} is not registered.",
-        )
-
-    try:
-        _ = get_env_spec(gym_module, args.env_name)
-    except Exception as exc:
-        report["availability"]["env"] = "spec_error"
-        return fail_report(
-            args.report,
-            report,
-            "env_unavailable",
-            f"gym.spec({args.env_name!r}) failed: {type(exc).__name__}: {exc}",
-        )
-    report["availability"]["env"] = "available"
-
-    parse_env_cfg = import_parse_env_cfg()
-    if parse_env_cfg is None:
-        report["warnings"].append("Isaac Lab parse_env_cfg was unavailable; kept fallback/static metadata.")
-    else:
         try:
-            try:
-                cfg = parse_env_cfg(args.env_name, device="cpu", num_envs=1, use_fabric=False)
-            except TypeError:
-                cfg = parse_env_cfg(args.env_name)
-            extract_cfg_metadata(cfg, report)
+            app_launcher_instance = app_launcher_cls({"headless": True})
+        except TypeError as exc:
+            report["warnings"].append(
+                f"AppLauncher dict initialization failed; retried with headless keyword: {exc}"
+            )
+            app_launcher_instance = app_launcher_cls(headless=True)
+        simulation_app = getattr(app_launcher_instance, "app", None)
+        report["headless_supported"] = True
+        report["headless_instantiated"] = True
+    except Exception as exc:
+        return fail_report(
+            args.report,
+            report,
+            "isaac_unavailable",
+            f"Isaac AppLauncher headless launch failed: {type(exc).__name__}: {exc}",
+        )
+
+    try:
+        try:
+            import_openarm_registration(report)
+        except RuntimeError as exc:
+            return fail_report(args.report, report, "openarm_isaac_unavailable", str(exc))
+
+        discovered_envs = enumerate_openarm_envs(gym_module, args.include_play)
+        report["matching_env_names"] = discovered_envs
+
+        if args.env_name not in discovered_envs:
+            if discovered_envs:
+                report["env_name"] = discovered_envs[0]
+                report["warnings"].append(
+                    f"Requested env {args.env_name!r} was not registered; reporting first discovered OpenArm env {discovered_envs[0]!r}."
+                )
+            report["availability"]["env"] = "missing"
+            return fail_report(
+                args.report,
+                report,
+                "env_unavailable",
+                f"Requested OpenArm Isaac env {args.env_name!r} is not registered.",
+            )
+
+        try:
+            _ = get_env_spec(gym_module, args.env_name)
         except Exception as exc:
-            report["warnings"].append(f"parse_env_cfg failed safely: {type(exc).__name__}: {exc}")
+            report["availability"]["env"] = "spec_error"
+            return fail_report(
+                args.report,
+                report,
+                "env_unavailable",
+                f"gym.spec({args.env_name!r}) failed: {type(exc).__name__}: {exc}",
+            )
+        report["availability"]["env"] = "available"
 
-    maybe_instantiate_headless(args, app_launcher, gym_module, report)
+        parse_env_cfg = import_parse_env_cfg()
+        if parse_env_cfg is None:
+            report["warnings"].append("Isaac Lab parse_env_cfg was unavailable; kept fallback/static metadata.")
+        else:
+            try:
+                try:
+                    cfg = parse_env_cfg(args.env_name, device="cpu", num_envs=1, use_fabric=False)
+                except TypeError:
+                    cfg = parse_env_cfg(args.env_name)
+                extract_cfg_metadata(cfg, report)
+            except Exception as exc:
+                report["warnings"].append(f"parse_env_cfg failed safely: {type(exc).__name__}: {exc}")
 
-    if not report["joint_names_discovered"]:
-        return fail_report(
-            args.report,
-            report,
-            "env_unavailable",
-            "OpenArm Isaac env is registered, but Isaac-derived joint names could not be discovered; fallback contract joint names are context only.",
-        )
-    if not report["tcp_frame_discovered"]:
-        return fail_report(
-            args.report,
-            report,
-            "env_unavailable",
-            "OpenArm Isaac env is registered, but Isaac-derived TCP frame could not be discovered; fallback contract TCP frame is context only.",
-        )
-    if not has_required_discovered_metadata(report):
-        return fail_report(
-            args.report,
-            report,
-            "env_unavailable",
-            "OpenArm Isaac env is registered, but required discovered metadata is incomplete.",
-        )
+        if args.instantiate_headless:
+            env = None
+            try:
+                make_fn = getattr(gym_module, "make", None)
+                if not callable(make_fn):
+                    raise RuntimeError("gym module does not expose make()")
+                try:
+                    env = make_fn(args.env_name, render_mode=None)
+                except TypeError:
+                    env = make_fn(args.env_name)
+                extract_runtime_metadata(env, report)
+            except Exception as exc:
+                report["warnings"].append(f"Headless env instantiation failed safely: {type(exc).__name__}: {exc}")
+            finally:
+                if env is not None:
+                    close = getattr(env, "close", None)
+                    if callable(close):
+                        try:
+                            _ = close()
+                        except Exception as exc:
+                            report["warnings"].append(f"Headless env close failed: {exc}")
+        else:
+            report["warnings"].append(
+                "Headless instantiation was not requested; static registry/config inspection only."
+            )
 
-    report["status"] = "pass"
-    report["reason"] = "pass"
-    write_report(args.report, report)
-    _ = sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    return 0
+        if not report["joint_names_discovered"]:
+            return fail_report(
+                args.report,
+                report,
+                "env_unavailable",
+                "OpenArm Isaac env is registered, but Isaac-derived joint names could not be discovered; fallback contract joint names are context only.",
+            )
+        if not report["tcp_frame_discovered"]:
+            return fail_report(
+                args.report,
+                report,
+                "env_unavailable",
+                "OpenArm Isaac env is registered, but Isaac-derived TCP frame could not be discovered; fallback contract TCP frame is context only.",
+            )
+        if not has_required_discovered_metadata(report):
+            return fail_report(
+                args.report,
+                report,
+                "env_unavailable",
+                "OpenArm Isaac env is registered, but required discovered metadata is incomplete.",
+            )
+
+        report["status"] = "pass"
+        report["reason"] = "pass"
+        write_report(args.report, report)
+        _ = sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        return 0
+    finally:
+        if simulation_app is not None:
+            close = getattr(simulation_app, "close", None)
+            if callable(close):
+                try:
+                    _ = close()
+                except Exception as exc:
+                    report["warnings"].append(f"Isaac app close failed: {exc}")
 
 
 if __name__ == "__main__":
