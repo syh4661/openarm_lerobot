@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from importlib import import_module
 import json
 import logging
@@ -11,6 +12,8 @@ from pathlib import Path
 import sys
 import time
 from typing import Any
+
+import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +36,7 @@ dataset_module = import_module("lerobot.datasets.lerobot_dataset")
 pipeline_features_module = import_module("lerobot.datasets.pipeline_features")
 processor_module = import_module("lerobot.processor")
 converters_module = import_module("lerobot.processor.converters")
+rotation_module = import_module("lerobot.utils.rotation")
 robot_kinematic_processor_module = import_module(
     "lerobot.robots.so_follower.robot_kinematic_processor"
 )
@@ -52,12 +56,14 @@ aggregate_pipeline_dataset_features = getattr(
 create_initial_features = getattr(pipeline_features_module, "create_initial_features")
 OpenArmKinematics = getattr(openarm_kinematics_module, "OpenArmKinematics")
 RobotProcessorPipeline = getattr(processor_module, "RobotProcessorPipeline")
+TransitionKey = getattr(processor_module, "TransitionKey")
 observation_to_transition = getattr(converters_module, "observation_to_transition")
 robot_action_observation_to_transition = getattr(
     converters_module, "robot_action_observation_to_transition"
 )
 transition_to_observation = getattr(converters_module, "transition_to_observation")
 transition_to_robot_action = getattr(converters_module, "transition_to_robot_action")
+Rotation = getattr(rotation_module, "Rotation")
 EEBoundsAndSafety = getattr(robot_kinematic_processor_module, "EEBoundsAndSafety")
 EEReferenceAndDelta = getattr(robot_kinematic_processor_module, "EEReferenceAndDelta")
 ForwardKinematicsJointsToEE = getattr(
@@ -114,6 +120,133 @@ class CurrentHoldEEReferenceAndDelta(EEReferenceAndDelta):
         output[_QUEST_ENABLED_HOLD_KEY] = 1.0 if enabled else 0.0
         output[_QUEST_ZERO_DELTA_HOLD_KEY] = 1.0 if zero_delta else 0.0
         return output
+
+
+@dataclass
+class DroidCurrentHoldEEReferenceAndDelta(CurrentHoldEEReferenceAndDelta):
+    """DROID-style velocity P-control from Quest EE offset to next EE target."""
+
+    pos_action_gain: float = 5.0
+    max_lin_vel: float = 0.3
+    rot_action_gain: float = 2.0
+    max_rot_vel: float = 1.0
+    fps: float = 60.0
+
+    def action(self, action: Any) -> Any:
+        observation = self.transition.get(TransitionKey.OBSERVATION)
+        if observation is None:
+            raise ValueError("Joints observation is required for computing robot kinematics")
+
+        if self.fps <= 0.0:
+            raise ValueError("DROID EE control fps must be positive.")
+        if self.max_lin_vel <= 0.0:
+            raise ValueError("DROID max_lin_vel must be positive.")
+        if self.max_rot_vel <= 0.0:
+            raise ValueError("DROID max_rot_vel must be positive.")
+
+        q_raw = np.array(
+            [
+                float(value)
+                for key, value in observation.items()
+                if isinstance(key, str)
+                and key.endswith(".pos")
+                and key.removesuffix(".pos") in self.motor_names
+            ],
+            dtype=float,
+        )
+        if q_raw.size == 0:
+            raise ValueError("Joints observation is required for computing robot kinematics")
+
+        t_curr = self.kinematics.forward_kinematics(q_raw)
+        enabled = bool(action.pop("enabled"))
+        zero_delta = enabled and _action_has_zero_ee_delta(action)
+        tx = float(action.pop("target_x"))
+        ty = float(action.pop("target_y"))
+        tz = float(action.pop("target_z"))
+        wx = float(action.pop("target_wx"))
+        wy = float(action.pop("target_wy"))
+        wz = float(action.pop("target_wz"))
+        gripper_vel = float(action.pop("gripper_vel"))
+
+        if enabled:
+            ref = t_curr
+            if self.use_latched_reference:
+                if not self._prev_enabled or self.reference_ee_pose is None:
+                    self.reference_ee_pose = t_curr.copy()
+                ref = self.reference_ee_pose if self.reference_ee_pose is not None else t_curr
+
+            delta_p = np.array(
+                [
+                    tx * self.end_effector_step_sizes["x"],
+                    ty * self.end_effector_step_sizes["y"],
+                    tz * self.end_effector_step_sizes["z"],
+                ],
+                dtype=float,
+            )
+            robot_offset = t_curr[:3, 3] - ref[:3, 3]
+            pos_error = delta_p - robot_offset
+            lin_velocity, lin_clipped = _clip_vector_norm(
+                pos_error * float(self.pos_action_gain),
+                float(self.max_lin_vel),
+            )
+
+            target_rot_offset = Rotation.from_rotvec(np.array([wx, wy, wz])).as_matrix()
+            robot_rot_offset = ref[:3, :3].T @ t_curr[:3, :3]
+            rot_error_matrix = target_rot_offset @ robot_rot_offset.T
+            rot_error = Rotation.from_matrix(rot_error_matrix).as_rotvec()
+            rot_velocity, rot_clipped = _clip_vector_norm(
+                rot_error * float(self.rot_action_gain),
+                float(self.max_rot_vel),
+            )
+
+            dt = 1.0 / float(self.fps)
+            desired = np.eye(4, dtype=float)
+            desired[:3, 3] = t_curr[:3, 3] + lin_velocity * dt
+            desired[:3, :3] = t_curr[:3, :3] @ Rotation.from_rotvec(
+                rot_velocity * dt
+            ).as_matrix()
+            self._command_when_disabled = desired.copy()
+            _log_quest_debug(
+                event="closed_loop_droid_ee_step",
+                pos_error=pos_error,
+                pos_error_norm=float(np.linalg.norm(pos_error)),
+                lin_velocity=lin_velocity,
+                lin_velocity_norm=float(np.linalg.norm(lin_velocity)),
+                clipped_by_max_lin_vel=lin_clipped,
+                rot_error=rot_error,
+                rot_error_norm=float(np.linalg.norm(rot_error)),
+                rot_velocity=rot_velocity,
+                rot_velocity_norm=float(np.linalg.norm(rot_velocity)),
+                clipped_by_max_rot_vel=rot_clipped,
+                dt=dt,
+                desired_pos_delta=desired[:3, 3] - t_curr[:3, 3],
+            )
+        else:
+            self.reference_ee_pose = None
+            if self._command_when_disabled is None:
+                self._command_when_disabled = t_curr.copy()
+            desired = self._command_when_disabled.copy()
+
+        pos = desired[:3, 3]
+        tw = Rotation.from_matrix(desired[:3, :3]).as_rotvec()
+        action["ee.x"] = float(pos[0])
+        action["ee.y"] = float(pos[1])
+        action["ee.z"] = float(pos[2])
+        action["ee.wx"] = float(tw[0])
+        action["ee.wy"] = float(tw[1])
+        action["ee.wz"] = float(tw[2])
+        action["ee.gripper_vel"] = gripper_vel
+        action[_QUEST_ENABLED_HOLD_KEY] = 1.0 if enabled else 0.0
+        action[_QUEST_ZERO_DELTA_HOLD_KEY] = 1.0 if zero_delta else 0.0
+        self._prev_enabled = enabled
+        return action
+
+
+def _clip_vector_norm(vector: np.ndarray, max_norm: float) -> tuple[np.ndarray, bool]:
+    norm = float(np.linalg.norm(vector))
+    if norm > max_norm and norm > 0.0:
+        return vector / norm * max_norm, True
+    return vector, False
 
 
 class CurrentAwareEEBoundsAndSafety(EEBoundsAndSafety):
@@ -553,6 +686,12 @@ def make_teleop_config(raw: dict[str, Any]) -> Any:
     teleop_raw.pop("gripper_invert_velocity", None)
     teleop_raw.pop("gripper_control_mode", None)
     teleop_raw.pop("gripper_max_step_deg", None)
+    teleop_raw.pop("ee_control_mode", None)
+    teleop_raw.pop("pos_action_gain", None)
+    teleop_raw.pop("max_lin_vel", None)
+    teleop_raw.pop("rot_action_gain", None)
+    teleop_raw.pop("max_rot_vel", None)
+    teleop_raw.pop("ee_control_fps", None)
     return QuestSpatialTeleopConfig(**teleop_raw)
 
 
@@ -585,6 +724,31 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
     gripper_scale = -2.0 if gripper_invert_velocity else 2.0
     gripper_kwargs = _gripper_processor_kwargs(raw)
     gripper_control_mode = str(teleop_raw.get("gripper_control_mode", "velocity"))
+    ee_control_mode = str(teleop_raw.get("ee_control_mode", "static")).lower()
+    ee_control_fps = float(
+        teleop_raw.get("ee_control_fps", raw.get("dataset", {}).get("fps", 30.0))
+    )
+    if ee_control_mode == "droid":
+        ee_reference_step = DroidCurrentHoldEEReferenceAndDelta(
+            kinematics=kinematics,
+            end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
+            motor_names=motor_names,
+            use_latched_reference=True,
+            pos_action_gain=float(teleop_raw.get("pos_action_gain", 5.0)),
+            max_lin_vel=float(teleop_raw.get("max_lin_vel", 0.3)),
+            rot_action_gain=float(teleop_raw.get("rot_action_gain", 2.0)),
+            max_rot_vel=float(teleop_raw.get("max_rot_vel", 1.0)),
+            fps=ee_control_fps,
+        )
+    elif ee_control_mode == "static":
+        ee_reference_step = CurrentHoldEEReferenceAndDelta(
+            kinematics=kinematics,
+            end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
+            motor_names=motor_names,
+            use_latched_reference=True,
+        )
+    else:
+        raise ValueError("teleop.ee_control_mode must be either 'static' or 'droid'.")
     gripper_processor = GripperVelocityToJoint(**gripper_kwargs)
     if gripper_control_mode == "hold_ramp":
         gripper_processor = OpenArmGripperVelocityToJoint(
@@ -604,15 +768,20 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
         gripper_kwargs["clip_min"],
         gripper_kwargs["clip_max"],
     )
+    logger.info(
+        "Quest EE control config: mode=%s fps=%s pos_gain=%s max_lin_vel=%s "
+        "rot_gain=%s max_rot_vel=%s",
+        ee_control_mode,
+        ee_control_fps,
+        teleop_raw.get("pos_action_gain", 5.0),
+        teleop_raw.get("max_lin_vel", 0.3),
+        teleop_raw.get("rot_action_gain", 2.0),
+        teleop_raw.get("max_rot_vel", 1.0),
+    )
     teleop_action_processor = RobotProcessorPipeline(
         steps=[
             MapQuestActionToRobotAction(gripper_scale=gripper_scale),
-            CurrentHoldEEReferenceAndDelta(
-                kinematics=kinematics,
-                end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
-                motor_names=motor_names,
-                use_latched_reference=True,
-            ),
+            ee_reference_step,
             CurrentAwareEEBoundsAndSafety(
                 end_effector_bounds={"min": [-2.0, -2.0, -2.0], "max": [2.0, 2.0, 2.0]},
                 max_ee_step_m=0.05,
