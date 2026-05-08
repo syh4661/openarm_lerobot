@@ -320,7 +320,8 @@ class QuestSpatialTeleop(Teleoperator):
         )
         if calibrated_delta is None:
             action = self._zero_action(
-                enabled=False, gripper=QUEST_SPATIAL_GRIPPER_NEUTRAL
+                enabled=self._state == "tracking",
+                gripper=normalized_gripper,
             )
             _log_quest_debug(
                 event="spatial_delta_unavailable",
