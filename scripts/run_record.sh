@@ -14,6 +14,7 @@ Usage:
 Optional environment overrides:
   OPENARM_RECORD_REPO_ID=<namespace>/<dataset_name>
   OPENARM_RECORD_PUSH_TO_HUB=1
+  OPENARM_RECORD_TIMESTAMP=0  # keep run_name unchanged instead of appending YYYYMMDD_HHMMSS
 
 Common LeRobot overrides passed after the wrapper args:
   --dataset.single_task="natural language task"
@@ -75,9 +76,29 @@ case "$PRESET" in
 esac
 
 TEMPLATE="${OPENARM_RECORD_TEMPLATE_OVERRIDE:-$CONFIG_DIR/record_${PRESET}.json}"
-GENERATED="$TMP_DIR/record_${PRESET}_${RUN_NAME}.json"
-DATA_ROOT="$ROOT/data/${RUN_NAME}"
-REPO_ID="${OPENARM_RECORD_REPO_ID:-local/${RUN_NAME}}"
+TIMESTAMP_ENABLED="${OPENARM_RECORD_TIMESTAMP:-1}"
+if [ "${OPENARM_RECORD_COMPAT_ONLY:-0}" = "1" ]; then
+  TIMESTAMP_ENABLED="${OPENARM_RECORD_TIMESTAMP:-0}"
+fi
+
+case "$TIMESTAMP_ENABLED" in
+  0|1|true|false|True|False) ;;
+  *)
+    echo "[ERROR] OPENARM_RECORD_TIMESTAMP must be 0/1/true/false, got: $TIMESTAMP_ENABLED" >&2
+    exit 1
+    ;;
+esac
+
+RUN_ID="$RUN_NAME"
+case "$TIMESTAMP_ENABLED" in
+  1|true|True)
+    RUN_ID="${RUN_NAME}_$(date +%Y%m%d_%H%M%S)"
+    ;;
+esac
+
+GENERATED="$TMP_DIR/record_${PRESET}_${RUN_ID}.json"
+DATA_ROOT="$ROOT/data/${RUN_ID}"
+REPO_ID="${OPENARM_RECORD_REPO_ID:-local/${RUN_ID}}"
 PUSH_TO_HUB="${OPENARM_RECORD_PUSH_TO_HUB:-0}"
 
 case "$PUSH_TO_HUB" in
@@ -160,7 +181,7 @@ source "$ROOT/scripts/env_rsusb_py312.sh"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "[INFO] Preset      : $PRESET"
-echo "[INFO] Run name    : $RUN_NAME"
+echo "[INFO] Run name    : $RUN_ID"
 echo "[INFO] Config path : $GENERATED"
 echo "[INFO] Data root   : $DATA_ROOT"
 echo "[INFO] Dataset ID  : $REPO_ID"
@@ -169,4 +190,4 @@ if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
   echo "[INFO] Extra args  : ${EXTRA_ARGS[*]}"
 fi
 
-python -c 'import sys; import openarm_lerobot; sys.argv[0] = "lerobot_record"; from lerobot.scripts.lerobot_record import main; main()' --config_path "$GENERATED" "${EXTRA_ARGS[@]}"
+python -c 'import sys; import openarm_lerobot.safe_followers; sys.argv[0] = "lerobot_record"; from lerobot.scripts.lerobot_record import main; main()' --config_path "$GENERATED" "${EXTRA_ARGS[@]}"

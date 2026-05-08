@@ -41,7 +41,7 @@ _SAFE_SHUTDOWN_RECV_TIMEOUT_S = 0.1
 _SAFE_SHUTDOWN_SETTLE_S = 0.2
 _SAFE_SHUTDOWN_FINAL_SETTLE_S = 2.0
 _SAFE_SHUTDOWN_FINAL_DISABLE_CYCLES = 3
-_JOINT_LIMIT_TOLERANCE_DEG = 1e-6
+_JOINT_LIMIT_TOLERANCE_DEG = 1.0
 
 
 def _joint_limit_violations(
@@ -71,6 +71,35 @@ def _joint_limit_violations(
                 }
             )
     return violations
+
+
+def _clamp_action_to_joint_limits(
+    action: RobotAction,
+    joint_limits: dict[str, tuple[float, float] | list[float]],
+    *,
+    always_clamp_motors: set[str] | None = None,
+) -> RobotAction:
+    always_clamp_motors = always_clamp_motors or set()
+    clamped_action = dict(action)
+    for key, raw_position in action.items():
+        if not key.endswith(".pos"):
+            continue
+
+        motor_name = key.removesuffix(".pos")
+        if motor_name not in joint_limits:
+            continue
+
+        position = float(raw_position)
+        min_limit, max_limit = joint_limits[motor_name]
+        if min_limit <= position <= max_limit:
+            continue
+        if motor_name in always_clamp_motors:
+            clamped_action[key] = max(float(min_limit), min(float(max_limit), position))
+        elif min_limit - _JOINT_LIMIT_TOLERANCE_DEG <= position < min_limit:
+            clamped_action[key] = float(min_limit)
+        elif max_limit < position <= max_limit + _JOINT_LIMIT_TOLERANCE_DEG:
+            clamped_action[key] = float(max_limit)
+    return clamped_action
 
 
 class _SafeOpenArmBusShutdownMixin:
@@ -216,7 +245,7 @@ class _SafeOpenArmBusShutdownMixin:
 
     def _disconnect_cameras(self) -> list[str]:
         shutdown_errors: list[str] = []
-        for cam_name, cam in self.cameras.items():
+        for cam_name, cam in getattr(self, "cameras", {}).items():
             try:
                 cam.disconnect()
             except Exception as exc:
@@ -311,6 +340,9 @@ class SafeOpenArmFollower(_SafeOpenArmBusShutdownMixin, OpenArmFollower):
         custom_kp: dict[str, float] | None = None,
         custom_kd: dict[str, float] | None = None,
     ) -> RobotAction:
+        action = _clamp_action_to_joint_limits(
+            action, self.config.joint_limits, always_clamp_motors={"gripper"}
+        )
         violations = _joint_limit_violations(action, self.config.joint_limits)
         if violations:
             payload = {"robot": str(self), "violations": violations}
@@ -328,6 +360,7 @@ class SafeOpenArmFollower(_SafeOpenArmBusShutdownMixin, OpenArmFollower):
                 f"OpenArm send_action aborted for joint limit violation: {payload}"
             )
 
+        action = _clamp_action_to_joint_limits(action, self.config.joint_limits)
         return super().send_action(action, custom_kp=custom_kp, custom_kd=custom_kd)
 
     @check_if_not_connected
@@ -407,6 +440,7 @@ class SafeBiOpenArmFollower(BiOpenArmFollower):
         self.left_arm = SafeOpenArmFollower(left_arm_config)
         self.right_arm = SafeOpenArmFollower(right_arm_config)
         self.cameras = {**self.left_arm.cameras, **self.right_arm.cameras}
+        self._gripper_references: dict[str, tuple[float, float]] = {}
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -453,7 +487,39 @@ class SafeBiOpenArmFollower(BiOpenArmFollower):
         custom_kp: dict[str, float] | None = None,
         custom_kd: dict[str, float] | None = None,
     ) -> RobotAction:
+        action = self._map_grippers_relative_to_start(action)
         return super().send_action(action, custom_kp=custom_kp, custom_kd=custom_kd)
+
+    def _map_grippers_relative_to_start(self, action: RobotAction) -> RobotAction:
+        mapped_action = dict(action)
+        for side, arm in (("left", self.left_arm), ("right", self.right_arm)):
+            action_key = f"{side}_gripper.pos"
+            if action_key not in action:
+                continue
+
+            limits = arm.config.joint_limits.get("gripper")
+            if limits is None:
+                continue
+
+            leader_position = float(action[action_key])
+            if side not in self._gripper_references:
+                follower_position = float(
+                    arm.bus.sync_read("Present_Position", ["gripper"])["gripper"]
+                )
+                self._gripper_references[side] = (leader_position, follower_position)
+                logger.info(
+                    "OpenArm %s gripper relative reference: leader=%.3f follower=%.3f",
+                    side,
+                    leader_position,
+                    follower_position,
+                )
+
+            leader_reference, follower_reference = self._gripper_references[side]
+            target = follower_reference + (leader_position - leader_reference)
+            min_limit, max_limit = limits
+            mapped_action[action_key] = max(float(min_limit), min(float(max_limit), target))
+
+        return mapped_action
 
     @check_if_not_connected
     def disconnect(self):
