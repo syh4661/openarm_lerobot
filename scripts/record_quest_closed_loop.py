@@ -164,6 +164,49 @@ class QuestDebugRobotActionProcessor:
         return output
 
 
+class HoldWhenQuestDisabledRobotActionProcessor:
+    """Bypass IK while Quest tracking is disabled and hold measured joints."""
+
+    def __init__(self, processor: Any):
+        self._processor = processor
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._processor, name)
+
+    def __call__(self, data: Any) -> dict[str, float]:
+        if not isinstance(data, tuple) or len(data) != 2:
+            return self._processor(data)
+
+        raw_action, observation = data
+        if not isinstance(raw_action, dict) or not isinstance(observation, dict):
+            return self._processor(data)
+
+        try:
+            quest_enabled = bool(float(raw_action.get("quest.enabled", 0.0)))
+        except (TypeError, ValueError):
+            quest_enabled = False
+
+        if quest_enabled:
+            return self._processor(data)
+
+        output = _hold_observed_motor_positions(observation)
+        _log_quest_debug(
+            event="closed_loop_disabled_joint_hold",
+            commanded_joint_angles_deg=_ordered_joint_positions(output),
+        )
+        return output
+
+
+def _hold_observed_motor_positions(observation: dict[str, Any]) -> dict[str, float]:
+    output: dict[str, float] = {}
+    for motor_name in QUEST_OPENARM_MOTOR_NAMES:
+        key = f"{motor_name}.pos"
+        if key not in observation:
+            raise ValueError(f"Observation missing {key!r} for disabled joint hold.")
+        output[key] = float(observation[key])
+    return output
+
+
 def _ordered_joint_positions(action: dict[str, Any]) -> list[float | None]:
     values: list[float | None] = []
     for motor_name in QUEST_OPENARM_MOTOR_NAMES:
@@ -453,6 +496,9 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
         ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
+    )
+    robot_action_processor = HoldWhenQuestDisabledRobotActionProcessor(
+        robot_action_processor
     )
     robot_observation_processor = RobotProcessorPipeline(
         steps=[
