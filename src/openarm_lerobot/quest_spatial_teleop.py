@@ -319,10 +319,6 @@ class QuestSpatialTeleop(Teleoperator):
             self._coord_transform_matrix,
         )
         if calibrated_delta is None:
-            self._state = "calibrated_idle"
-            self._grip_was_pressed = False
-            self._grip_pressed_since = None
-            self._ref_controller_tf = controller_tf.copy()
             action = self._zero_action(
                 enabled=False, gripper=QUEST_SPATIAL_GRIPPER_NEUTRAL
             )
