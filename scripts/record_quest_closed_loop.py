@@ -205,6 +205,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
         self._processor = processor
         self._joint_limits = joint_limits or {}
         self._latched_hold_action: dict[str, float] | None = None
+        self._latched_zero_delta_action: dict[str, float] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._processor, name)
@@ -232,12 +233,20 @@ class HoldWhenQuestDisabledRobotActionProcessor:
         if quest_enabled:
             if not zero_delta_hold:
                 self._latched_hold_action = None
+                self._latched_zero_delta_action = None
                 return self._processor((action, observation))
 
-            output = _hold_observed_motor_positions(
-                observation,
+            if self._latched_zero_delta_action is None:
+                self._latched_zero_delta_action = _hold_observed_motor_positions(
+                    observation,
+                    self._joint_limits,
+                    gripper_pos=action.get("ee.gripper_pos"),
+                )
+            output = dict(self._latched_zero_delta_action)
+            _apply_gripper_target(
+                output,
+                action.get("ee.gripper_pos"),
                 self._joint_limits,
-                gripper_pos=action.get("ee.gripper_pos"),
             )
             _log_quest_debug(
                 event="closed_loop_zero_delta_joint_hold",
@@ -245,6 +254,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
             )
             return output
 
+        self._latched_zero_delta_action = None
         if self._latched_hold_action is None:
             self._latched_hold_action = _hold_observed_motor_positions(
                 observation, self._joint_limits
@@ -277,6 +287,20 @@ def _hold_observed_motor_positions(
             value = min(max(value, float(lower)), float(upper))
         output[key] = value
     return output
+
+
+def _apply_gripper_target(
+    action: dict[str, float],
+    gripper_pos: Any | None,
+    joint_limits: dict[str, Any],
+) -> None:
+    if gripper_pos is None:
+        return
+    value = float(gripper_pos)
+    if "gripper" in joint_limits:
+        lower, upper = joint_limits["gripper"]
+        value = min(max(value, float(lower)), float(upper))
+    action["gripper.pos"] = value
 
 
 def _action_has_zero_ee_delta(action: dict[str, Any]) -> bool:
@@ -354,6 +378,8 @@ def ramp_to_init_pose(
     *,
     tick_hz: float = 30.0,
     max_observed_lag_deg: float | None = 5.0,
+    observed_tolerance_deg: float = 2.0,
+    settle_s: float = 0.5,
 ) -> None:
     """Slowly ramp robot joints to target pose using send_action."""
 
@@ -365,6 +391,10 @@ def ramp_to_init_pose(
         raise ValueError("tick_hz must be positive.")
     if max_observed_lag_deg is not None and max_observed_lag_deg <= 0.0:
         raise ValueError("init_pose_max_observed_lag_deg must be positive.")
+    if observed_tolerance_deg <= 0.0:
+        raise ValueError("init_pose_observed_tolerance_deg must be positive.")
+    if settle_s < 0.0:
+        raise ValueError("init_pose_settle_s must be non-negative.")
 
     motor_names = [f"joint_{index}" for index in range(1, 8)]
     target: dict[str, float] = {}
@@ -391,6 +421,7 @@ def ramp_to_init_pose(
     )
     deadline = time.monotonic() + float(timeout_s)
     period_s = 1.0 / tick_hz
+    settled_since: float | None = None
 
     while True:
         current = _read_motor_positions(robot)
@@ -439,20 +470,36 @@ def ramp_to_init_pose(
             )
         robot.send_action(action)
 
-        if max_command_error <= 0.3:
+        if (
+            max_command_error <= 0.3
+            and max_observed_error <= observed_tolerance_deg
+            and (
+                max_observed_lag_deg is None
+                or max_observed_lag <= max_observed_lag_deg
+            )
+        ):
+            if settled_since is None:
+                settled_since = time.monotonic()
+        else:
+            settled_since = None
+
+        if settled_since is not None and time.monotonic() - settled_since >= settle_s:
             _log_quest_debug(
                 event="init_pose_ramp_complete",
                 max_command_error_deg=max_command_error,
                 max_observed_error_deg=max_observed_error,
                 max_observed_lag_deg=max_observed_lag,
                 target_pose_deg=target,
+                observed_tolerance_deg=observed_tolerance_deg,
+                settle_s=settle_s,
             )
             return
         if time.monotonic() >= deadline:
             raise RuntimeError(
                 f"Init pose ramp timed out after {timeout_s}s; "
                 f"max_command_error={max_command_error:.3f} deg, "
-                f"max_observed_error={max_observed_error:.3f} deg."
+                f"max_observed_error={max_observed_error:.3f} deg, "
+                f"observed_tolerance={observed_tolerance_deg:.3f} deg."
             )
         time.sleep(period_s)
 
