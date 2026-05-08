@@ -202,13 +202,23 @@ class QuestSpatialTeleop(Teleoperator):
             raise RuntimeError("QuestSpatialTeleop is not connected.")
 
         deadline = monotonic() + QUEST_OPENARM_CALIBRATE_TIMEOUT_S
+        last_log_t = 0.0
         while True:
             quest_cfg = cast(Any, self._quest_config)
-            controller_state = read_controller_state(
-                self._reader, quest_cfg.controller_side
+            controller_state, controller_unavailable_reason = read_controller_state(
+                self._reader, quest_cfg.controller_side, return_reason=True
             )
             if controller_state is None:
-                if monotonic() >= deadline:
+                now = monotonic()
+                if now - last_log_t >= 1.0:
+                    last_log_t = now
+                    _log_quest_debug(
+                        event="spatial_calibrate_wait",
+                        state=self._state,
+                        controller_unavailable_reason=controller_unavailable_reason,
+                        quest_reader_diag=getattr(self._reader, "diagnostics", {}),
+                    )
+                if now >= deadline:
                     raise RuntimeError(
                         "Quest calibration timed out waiting for controller transforms; "
                         "check Quest / ADB / controller-transform unavailability."
