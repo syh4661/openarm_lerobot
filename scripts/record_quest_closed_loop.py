@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 
@@ -41,6 +42,7 @@ quest_processor_module = import_module("openarm_lerobot.quest_processor")
 quest_spatial_teleop_module = import_module("openarm_lerobot.quest_spatial_teleop")
 quest_teleop_module = import_module("openarm_lerobot.quest_teleop")
 safe_followers_module = import_module("openarm_lerobot.safe_followers")
+operator_notify_module = import_module("openarm_lerobot.operator_notify")
 
 combine_feature_dicts = getattr(feature_utils_module, "combine_feature_dicts")
 LeRobotDataset = getattr(dataset_module, "LeRobotDataset")
@@ -86,6 +88,8 @@ QUEST_OPENARM_URDF_JOINT_NAMES = getattr(
 _log_quest_debug = getattr(quest_teleop_module, "_log_quest_debug")
 SafeOpenArmFollower = getattr(safe_followers_module, "SafeOpenArmFollower")
 SafeOpenArmFollowerConfig = getattr(safe_followers_module, "SafeOpenArmFollowerConfig")
+notify = getattr(operator_notify_module, "notify")
+confirm = getattr(operator_notify_module, "confirm")
 
 
 logger = logging.getLogger(__name__)
@@ -178,6 +182,147 @@ def _disconnect_if_connected(device: Any, *, label: str) -> None:
         device.disconnect()
     except Exception:
         logger.exception("Failed to disconnect %s cleanly.", label)
+
+
+def _motor_pos_key(name: str) -> str:
+    return f"{name}.pos"
+
+
+def _joint_limit_clamp(robot: Any, motor_name: str, value: float) -> float:
+    joint_limits = getattr(getattr(robot, "config", None), "joint_limits", {})
+    if motor_name not in joint_limits:
+        return float(value)
+    lower, upper = joint_limits[motor_name]
+    return min(max(float(value), float(lower)), float(upper))
+
+
+def _joint_limit_bounds(robot: Any, motor_name: str) -> tuple[float, float] | None:
+    joint_limits = getattr(getattr(robot, "config", None), "joint_limits", {})
+    if motor_name not in joint_limits:
+        return None
+    lower, upper = joint_limits[motor_name]
+    return float(lower), float(upper)
+
+
+def _read_motor_positions(robot: Any) -> dict[str, float]:
+    observation = robot.get_observation()
+    positions: dict[str, float] = {}
+    for name in [f"joint_{index}" for index in range(1, 8)] + ["gripper"]:
+        key = _motor_pos_key(name)
+        if key in observation:
+            positions[name] = float(observation[key])
+    return positions
+
+
+def ramp_to_init_pose(
+    robot: Any,
+    target_pose_deg: dict[str, float],
+    max_step_deg: float,
+    timeout_s: float,
+    *,
+    tick_hz: float = 30.0,
+    max_observed_lag_deg: float | None = 5.0,
+) -> None:
+    """Slowly ramp robot joints to target pose using send_action."""
+
+    if max_step_deg <= 0.0:
+        raise ValueError("init_pose_max_step_deg must be positive.")
+    if timeout_s <= 0.0:
+        raise ValueError("init_pose_timeout_s must be positive.")
+    if tick_hz <= 0.0:
+        raise ValueError("tick_hz must be positive.")
+    if max_observed_lag_deg is not None and max_observed_lag_deg <= 0.0:
+        raise ValueError("init_pose_max_observed_lag_deg must be positive.")
+
+    motor_names = [f"joint_{index}" for index in range(1, 8)]
+    target: dict[str, float] = {}
+    for name in motor_names:
+        requested_target = float(target_pose_deg.get(name, 0.0))
+        bounds = _joint_limit_bounds(robot, name)
+        if bounds is not None:
+            lower, upper = bounds
+            if requested_target < lower or requested_target > upper:
+                raise ValueError(
+                    f"init_pose_deg {name}={requested_target:.3f} deg is outside "
+                    f"joint limits [{lower:.3f}, {upper:.3f}] deg."
+                )
+        target[name] = requested_target
+    positions = _read_motor_positions(robot)
+    command_pos = {
+        name: _joint_limit_clamp(robot, name, positions.get(name, 0.0))
+        for name in motor_names
+    }
+    gripper_hold = (
+        _joint_limit_clamp(robot, "gripper", positions["gripper"])
+        if "gripper" in positions
+        else None
+    )
+    deadline = time.monotonic() + float(timeout_s)
+    period_s = 1.0 / tick_hz
+
+    while True:
+        current = _read_motor_positions(robot)
+        action: dict[str, float] = {}
+        max_command_error = 0.0
+        max_observed_error = 0.0
+        max_observed_lag = 0.0
+        for name in motor_names:
+            target_pos = target[name]
+            command_error = target_pos - command_pos[name]
+            observed_pos = _joint_limit_clamp(robot, name, current.get(name, 0.0))
+            observed_error = target_pos - observed_pos
+            observed_lag = command_pos[name] - observed_pos
+            max_command_error = max(max_command_error, abs(command_error))
+            max_observed_error = max(max_observed_error, abs(observed_error))
+            max_observed_lag = max(max_observed_lag, abs(observed_lag))
+            if abs(command_error) <= 0.3:
+                next_pos = target_pos
+            else:
+                step = min(abs(command_error), float(max_step_deg))
+                next_pos = command_pos[name] + (
+                    step if command_error > 0.0 else -step
+                )
+            command_pos[name] = _joint_limit_clamp(robot, name, next_pos)
+            action[_motor_pos_key(name)] = _joint_limit_clamp(robot, name, next_pos)
+
+        if gripper_hold is not None:
+            action[_motor_pos_key("gripper")] = gripper_hold
+
+        _log_quest_debug(
+            event="init_pose_ramp",
+            max_command_error_deg=max_command_error,
+            max_observed_error_deg=max_observed_error,
+            max_observed_lag_deg=max_observed_lag,
+            target_pose_deg=target,
+            commanded_action=action,
+        )
+        if (
+            max_observed_lag_deg is not None
+            and max_observed_lag > max_observed_lag_deg
+        ):
+            raise RuntimeError(
+                "Init pose ramp observed lag exceeded "
+                f"{max_observed_lag_deg:.3f} deg; "
+                f"max_observed_lag={max_observed_lag:.3f} deg."
+            )
+        robot.send_action(action)
+
+        if max_command_error <= 0.3:
+            _log_quest_debug(
+                event="init_pose_ramp_complete",
+                max_command_error_deg=max_command_error,
+                max_observed_error_deg=max_observed_error,
+                max_observed_lag_deg=max_observed_lag,
+                target_pose_deg=target,
+            )
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Init pose ramp timed out after {timeout_s}s; "
+                f"max_command_error={max_command_error:.3f} deg, "
+                f"max_observed_error={max_observed_error:.3f} deg."
+            )
+        time.sleep(period_s)
 
 
 def parse_args() -> argparse.Namespace:
@@ -390,8 +535,54 @@ def main() -> None:
     )
 
     try:
+        notify("Quest closed-loop runtime starting.", kind="info")
+        notify("Connecting to robot bus...", kind="info")
         robot.connect()
+        init_pose_deg = raw.get("init_pose_deg")
+        if init_pose_deg is not None:
+            if args.no_send_action:
+                logger.warning(
+                    "Skipping init pose ramp because --no-send-action is active."
+                )
+            else:
+                notify("Init pose ramp starting. Keep clear.", kind="warn")
+                try:
+                    ramp_to_init_pose(
+                        robot,
+                        target_pose_deg=dict(init_pose_deg),
+                        max_step_deg=float(raw.get("init_pose_max_step_deg", 0.2)),
+                        timeout_s=float(raw.get("init_pose_timeout_s", 30.0)),
+                        max_observed_lag_deg=raw.get(
+                            "init_pose_max_observed_lag_deg", 5.0
+                        ),
+                    )
+                except Exception:
+                    notify(
+                        "ABORT - init pose ramp failed. Disconnecting.",
+                        kind="error",
+                        urgent=True,
+                    )
+                    raise
+
+                notify(
+                    "Init pose reached. Wake Quest controller and prepare grip.",
+                    kind="ready",
+                )
+                if not confirm(
+                    "좌팔이 init pose에 도달했습니다. Quest 컨트롤러 깨우고 "
+                    "LG 누를 준비 됐으면 OK. (Cancel = abort)"
+                ):
+                    notify(
+                        "Operator cancelled init pose. Disconnecting.",
+                        kind="error",
+                        urgent=True,
+                    )
+                    return
+
+        notify("Connecting Quest reader...", kind="info")
         teleop.connect()
+        notify("Quest tracking armed. Press LG to start teleop.", kind="go")
+        notify("Run start. Hold LG.", kind="go")
         record_loop(
             robot=runtime_robot,
             events=events,
@@ -405,12 +596,17 @@ def main() -> None:
             robot_action_processor=robot_action_processor,
             robot_observation_processor=robot_observation_processor,
         )
+        notify("Run complete. Release LG.", kind="ready")
         logger.info("Record loop finished with events=%s", events)
         if dataset.has_pending_frames():
             logger.info("Saving pending Quest closed-loop episode frames.")
             dataset.save_episode()
         else:
             logger.warning("Record loop finished without pending dataset frames.")
+        notify("Record loop done. Disconnecting.", kind="ready")
+    except Exception:
+        notify("ABORT - Quest closed-loop runtime failed.", kind="error", urgent=True)
+        raise
     finally:
         _disconnect_if_connected(teleop, label="Quest teleop")
         _disconnect_if_connected(robot, label="OpenArm robot")
