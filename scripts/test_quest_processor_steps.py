@@ -6,8 +6,13 @@ import argparse
 from importlib import import_module
 import math
 from pathlib import Path
+import sys
 from typing import Any
 
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 quest_teleop_module = import_module("openarm_lerobot.quest_teleop")
 QUEST_OPENARM_MOTOR_NAMES = getattr(quest_teleop_module, "QUEST_OPENARM_MOTOR_NAMES")
@@ -96,6 +101,50 @@ def build_pipeline(kinematics: Any) -> Any:
                 kinematics=kinematics,
                 motor_names=motor_names,
                 initial_guess_current_joints=True,
+            ),
+        ],
+        to_transition=robot_action_observation_to_transition,
+        to_output=transition_to_robot_action,
+    )
+
+
+def build_ee_pipeline(
+    kinematics: Any,
+    *,
+    pos_action_gain: float = 5.0,
+    max_lin_vel: float = 0.3,
+    fps: float = 60.0,
+) -> Any:
+    processor_module = import_module("lerobot.processor")
+    converters_module = import_module("lerobot.processor.converters")
+    quest_processor_module = import_module("openarm_lerobot.quest_processor")
+    closed_loop_module = import_module("scripts.record_quest_closed_loop")
+
+    robot_processor_pipeline = getattr(processor_module, "RobotProcessorPipeline")
+    robot_action_observation_to_transition = getattr(
+        converters_module, "robot_action_observation_to_transition"
+    )
+    transition_to_robot_action = getattr(
+        converters_module, "transition_to_robot_action"
+    )
+    map_quest_action_to_robot_action = getattr(
+        quest_processor_module, "MapQuestActionToRobotAction"
+    )
+    droid_ee_reference_and_delta = getattr(
+        closed_loop_module, "DroidCurrentHoldEEReferenceAndDelta"
+    )
+
+    return robot_processor_pipeline(
+        steps=[
+            map_quest_action_to_robot_action(),
+            droid_ee_reference_and_delta(
+                kinematics=kinematics,
+                end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
+                motor_names=list(QUEST_OPENARM_MOTOR_NAMES),
+                use_latched_reference=True,
+                pos_action_gain=pos_action_gain,
+                max_lin_vel=max_lin_vel,
+                fps=fps,
             ),
         ],
         to_transition=robot_action_observation_to_transition,
@@ -263,6 +312,59 @@ def run_disabled_after_tracking_case(
         raise AssertionError("disabled after tracking should zero gripper velocity")
 
 
+def run_zero_delta_holds_last_command_case() -> None:
+    closed_loop_module = import_module("scripts.record_quest_closed_loop")
+    hold_wrapper = getattr(closed_loop_module, "HoldWhenQuestDisabledRobotActionProcessor")
+    enabled_key = getattr(closed_loop_module, "_QUEST_ENABLED_HOLD_KEY")
+    zero_delta_key = getattr(closed_loop_module, "_QUEST_ZERO_DELTA_HOLD_KEY")
+
+    class StubProcessor:
+        def __call__(self, data: Any) -> dict[str, float]:
+            action, _observation = data
+            return {
+                "joint_1.pos": float(action["joint_1_target"]),
+                "joint_2.pos": 20.0,
+                "joint_3.pos": 30.0,
+                "joint_4.pos": 40.0,
+                "joint_5.pos": 50.0,
+                "joint_6.pos": 60.0,
+                "joint_7.pos": 70.0,
+                "gripper.pos": 0.0,
+            }
+
+    processor = hold_wrapper(StubProcessor())
+    observation = build_observation([0.0] * len(QUEST_OPENARM_MOTOR_NAMES))
+    first = processor(
+        (
+            {
+                "joint_1_target": 10.0,
+                enabled_key: 1.0,
+                zero_delta_key: 0.0,
+            },
+            observation,
+        )
+    )
+
+    drifted_observation = build_observation([90.0] * len(QUEST_OPENARM_MOTOR_NAMES))
+    held = processor(
+        (
+            {
+                "joint_1_target": -10.0,
+                enabled_key: 1.0,
+                zero_delta_key: 1.0,
+            },
+            drifted_observation,
+        )
+    )
+
+    for key, value in first.items():
+        if abs(float(held[key]) - float(value)) > 1e-9:
+            raise AssertionError(
+                f"zero-delta hold used observation instead of last command for {key}: "
+                f"{held[key]} vs {value}"
+            )
+
+
 def run_fail_closed_case(pipeline: Any) -> None:
     action = {
         "quest.pos_delta.x": 0.01,
@@ -313,6 +415,93 @@ def run_openarm_gripper_hold_ramp_case() -> None:
         )
 
 
+def run_droid_ee_velocity_case(kinematics: Any) -> None:
+    fps = 60.0
+    max_lin_vel = 0.3
+    pipeline = build_ee_pipeline(
+        kinematics,
+        pos_action_gain=5.0,
+        max_lin_vel=max_lin_vel,
+        fps=fps,
+    )
+    observation = build_observation([0.0] * len(QUEST_OPENARM_MOTOR_NAMES))
+    q_raw = [observation[f"{name}.pos"] for name in QUEST_OPENARM_MOTOR_NAMES]
+    current_pose = kinematics.forward_kinematics(q_raw)
+    max_step = max_lin_vel / fps
+
+    large_action = {
+        "quest.pos_delta.x": 1.0,
+        "quest.pos_delta.y": 0.0,
+        "quest.pos_delta.z": 0.0,
+        "quest.rot_delta.rx": 0.0,
+        "quest.rot_delta.ry": 0.0,
+        "quest.rot_delta.rz": 0.0,
+        "quest.gripper": 0.5,
+        "quest.enabled": 1.0,
+    }
+    large_target = pipeline((large_action, observation))
+    large_step = math.sqrt(
+        sum(
+            (
+                float(large_target[f"ee.{axis}"])
+                - float(current_pose[index, 3])
+            )
+            ** 2
+            for index, axis in enumerate(["x", "y", "z"])
+        )
+    )
+    if large_step > max_step + 1e-9:
+        raise AssertionError(
+            f"DROID EE step exceeded velocity limit: {large_step} > {max_step}"
+        )
+
+    pipeline = build_ee_pipeline(
+        kinematics,
+        pos_action_gain=5.0,
+        max_lin_vel=max_lin_vel,
+        fps=fps,
+    )
+    small_action = {
+        "quest.pos_delta.x": 0.001,
+        "quest.pos_delta.y": 0.0,
+        "quest.pos_delta.z": 0.0,
+        "quest.rot_delta.rx": 0.0,
+        "quest.rot_delta.ry": 0.0,
+        "quest.rot_delta.rz": 0.0,
+        "quest.gripper": 0.5,
+        "quest.enabled": 1.0,
+    }
+    small_target = pipeline((small_action, observation))
+    small_dx = float(small_target["ee.x"]) - float(current_pose[0, 3])
+    if not (0.0 < small_dx < max_step):
+        raise AssertionError(f"DROID small delta did not move smoothly: dx={small_dx}")
+
+    pipeline = build_ee_pipeline(kinematics, fps=fps)
+    zero_action = {
+        "quest.pos_delta.x": 0.0,
+        "quest.pos_delta.y": 0.0,
+        "quest.pos_delta.z": 0.0,
+        "quest.rot_delta.rx": 0.0,
+        "quest.rot_delta.ry": 0.0,
+        "quest.rot_delta.rz": 0.0,
+        "quest.gripper": 0.5,
+        "quest.enabled": 1.0,
+    }
+    zero_target = pipeline((zero_action, observation))
+    zero_step = math.sqrt(
+        sum(
+            (
+                float(zero_target[f"ee.{axis}"])
+                - float(current_pose[index, 3])
+            )
+            ** 2
+            for index, axis in enumerate(["x", "y", "z"])
+        )
+    )
+    if zero_step > 1e-9:
+        raise AssertionError(f"DROID zero delta moved EE target: {zero_step}")
+
+
 def main() -> None:
     args = parse_args()
     kinematics = build_kinematics(args.urdf)
@@ -325,7 +514,9 @@ def main() -> None:
     run_disabled_hold_case(build_pipeline(kinematics), observation)
     run_stateful_latched_reference_case(kinematics, observation)
     run_disabled_after_tracking_case(kinematics, observation)
+    run_zero_delta_holds_last_command_case()
     run_openarm_gripper_hold_ramp_case()
+    run_droid_ee_velocity_case(kinematics)
     run_fail_closed_case(pipeline)
     print("Quest processor step validation passed.")
 
