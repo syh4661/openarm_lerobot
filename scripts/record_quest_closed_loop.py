@@ -339,6 +339,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
         self._joint_limits = joint_limits or {}
         self._latched_hold_action: dict[str, float] | None = None
         self._latched_zero_delta_action: dict[str, float] | None = None
+        self._last_commanded_action: dict[str, float] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._processor, name)
@@ -367,14 +368,19 @@ class HoldWhenQuestDisabledRobotActionProcessor:
             if not zero_delta_hold:
                 self._latched_hold_action = None
                 self._latched_zero_delta_action = None
-                return self._processor((action, observation))
+                output = self._processor((action, observation))
+                self._last_commanded_action = dict(output)
+                return output
 
             if self._latched_zero_delta_action is None:
-                self._latched_zero_delta_action = _hold_observed_motor_positions(
-                    observation,
-                    self._joint_limits,
-                    gripper_pos=action.get("ee.gripper_pos"),
-                )
+                if self._last_commanded_action is not None:
+                    self._latched_zero_delta_action = dict(self._last_commanded_action)
+                else:
+                    self._latched_zero_delta_action = _hold_observed_motor_positions(
+                        observation,
+                        self._joint_limits,
+                        gripper_pos=action.get("ee.gripper_pos"),
+                    )
             output = dict(self._latched_zero_delta_action)
             _apply_gripper_target(
                 output,
@@ -385,6 +391,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
                 event="closed_loop_zero_delta_joint_hold",
                 commanded_joint_angles_deg=_ordered_joint_positions(output),
             )
+            self._last_commanded_action = dict(output)
             return output
 
         self._latched_zero_delta_action = None
@@ -393,6 +400,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
                 observation, self._joint_limits
             )
         output = dict(self._latched_hold_action)
+        self._last_commanded_action = dict(output)
         _log_quest_debug(
             event="closed_loop_disabled_joint_hold",
             commanded_joint_angles_deg=_ordered_joint_positions(output),
