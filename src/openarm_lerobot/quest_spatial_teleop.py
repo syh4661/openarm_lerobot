@@ -86,6 +86,8 @@ class QuestSpatialTeleopConfig(TeleoperatorConfig):
     )
     spatial_scale: float = QUEST_OPENARM_SPATIAL_SCALE
     max_ee_step_m: float = QUEST_OPENARM_MAX_EE_STEP_M
+    grip_settle_s: float = 0.5
+    translation_deadband_m: float = 0.001
     zero_orientation_delta: bool = False
     gripper_range_deg: tuple[float, ...] = field(
         default_factory=lambda: QUEST_OPENARM_GRIPPER_RANGE_DEG
@@ -105,6 +107,12 @@ class QuestSpatialTeleopConfig(TeleoperatorConfig):
 
         if self.max_ee_step_m <= 0.0:
             raise ValueError("max_ee_step_m must be a positive number.")
+
+        if self.grip_settle_s < 0.0:
+            raise ValueError("grip_settle_s must be non-negative.")
+
+        if self.translation_deadband_m < 0.0:
+            raise ValueError("translation_deadband_m must be non-negative.")
 
         _validate_spatial_contract(self)
 
@@ -144,6 +152,7 @@ class QuestSpatialTeleop(Teleoperator):
         self._state = "disconnected"
         self._ref_controller_tf: np.ndarray | None = None
         self._grip_was_pressed = False
+        self._grip_pressed_since: float | None = None
         self._coord_transform_matrix: np.ndarray = _coord_vec_to_matrix(
             cfg.coord_transform_vec
         )
@@ -163,7 +172,7 @@ class QuestSpatialTeleop(Teleoperator):
 
     @property
     def is_calibrated(self) -> bool:
-        return self._state in {"calibrated_idle", "tracking"}
+        return self._state in {"calibrated_idle", "grip_settling", "tracking"}
 
     def connect(self, calibrate: bool = True) -> None:
         if self._connected:
@@ -178,6 +187,7 @@ class QuestSpatialTeleop(Teleoperator):
         self._reader = reader
         self._ref_controller_tf = None
         self._grip_was_pressed = False
+        self._grip_pressed_since = None
         self._connected = True
         self._state = "connected_uncalibrated"
         _log_quest_debug(
@@ -209,6 +219,7 @@ class QuestSpatialTeleop(Teleoperator):
             controller_tf, _buttons = controller_state
             self._ref_controller_tf = controller_tf.copy()
             self._grip_was_pressed = False
+            self._grip_pressed_since = None
             self._state = "calibrated_idle"
             _log_quest_debug(
                 event="spatial_calibrate",
@@ -233,15 +244,17 @@ class QuestSpatialTeleop(Teleoperator):
         controller_state = read_controller_state(
             self._reader, quest_cfg.controller_side
         )
+        now = monotonic()
         if controller_state is None:
             self._state = "calibrated_idle"
             self._grip_was_pressed = False
+            self._grip_pressed_since = None
             action = self._zero_action(
                 enabled=False, gripper=QUEST_SPATIAL_GRIPPER_NEUTRAL
             )
             _log_quest_debug(
                 event="spatial_controller_unavailable",
-                t=monotonic(),
+                t=now,
                 state=self._state,
                 teleop_output=action,
             )
@@ -257,7 +270,7 @@ class QuestSpatialTeleop(Teleoperator):
             open_button=buttons.get(open_key),
         )
         base_debug_payload = {
-            "t": monotonic(),
+            "t": now,
             "state": self._state,
             "grip": grip_pressed,
             "gripper_open": _is_pressed(buttons.get(open_key)),
@@ -268,6 +281,7 @@ class QuestSpatialTeleop(Teleoperator):
         if not grip_pressed:
             self._state = "calibrated_idle"
             self._grip_was_pressed = False
+            self._grip_pressed_since = None
             self._ref_controller_tf = controller_tf.copy()
             action = self._zero_action(
                 enabled=False, gripper=QUEST_SPATIAL_GRIPPER_NEUTRAL
@@ -279,6 +293,25 @@ class QuestSpatialTeleop(Teleoperator):
 
         if not self._grip_was_pressed:
             self._ref_controller_tf = controller_tf.copy()
+            self._grip_pressed_since = now
+
+        grip_settle_s = float(quest_cfg.grip_settle_s)
+        if self._grip_pressed_since is not None:
+            settling_left_s = grip_settle_s - (now - self._grip_pressed_since)
+            if settling_left_s > 0.0:
+                self._state = "grip_settling"
+                self._grip_was_pressed = True
+                self._ref_controller_tf = controller_tf.copy()
+                action = self._zero_action(
+                    enabled=False, gripper=QUEST_SPATIAL_GRIPPER_NEUTRAL
+                )
+                _log_quest_debug(
+                    event="spatial_grip_settle",
+                    **base_debug_payload,
+                    grip_settle_remaining_s=float(settling_left_s),
+                    teleop_output=action,
+                )
+                return action
 
         calibrated_delta = compute_calibrated_delta(
             controller_tf,
@@ -287,7 +320,9 @@ class QuestSpatialTeleop(Teleoperator):
         )
         if calibrated_delta is None:
             self._state = "calibrated_idle"
-            self._grip_was_pressed = True
+            self._grip_was_pressed = False
+            self._grip_pressed_since = None
+            self._ref_controller_tf = controller_tf.copy()
             action = self._zero_action(
                 enabled=False, gripper=QUEST_SPATIAL_GRIPPER_NEUTRAL
             )
@@ -304,11 +339,17 @@ class QuestSpatialTeleop(Teleoperator):
             if bool(quest_cfg.zero_orientation_delta)
             else raw_orientation_delta
         )
+        scaled_position = position_delta * float(quest_cfg.spatial_scale)
+        translation_deadband_m = float(quest_cfg.translation_deadband_m)
+        if (
+            translation_deadband_m > 0.0
+            and float(np.linalg.norm(scaled_position)) < translation_deadband_m
+        ):
+            scaled_position = np.zeros(3, dtype=float)
         clipped_position = _clip_translation_step(
-            position_delta * float(quest_cfg.spatial_scale),
+            scaled_position,
             float(quest_cfg.max_ee_step_m),
         )
-        scaled_position = position_delta * float(quest_cfg.spatial_scale)
         clipped_by_max_ee_step = not np.allclose(scaled_position, clipped_position)
         self._state = "tracking"
         self._grip_was_pressed = True
@@ -335,6 +376,8 @@ class QuestSpatialTeleop(Teleoperator):
             clipped_pos_delta=clipped_position,
             clipped_by_max_ee_step=clipped_by_max_ee_step,
             max_ee_step_m=float(quest_cfg.max_ee_step_m),
+            translation_deadband_m=translation_deadband_m,
+            grip_settle_s=grip_settle_s,
             teleop_output=action,
         )
         return action
@@ -349,6 +392,7 @@ class QuestSpatialTeleop(Teleoperator):
         self._state = "disconnected"
         self._ref_controller_tf = None
         self._grip_was_pressed = False
+        self._grip_pressed_since = None
         _log_quest_debug(event="spatial_disconnect", state=self._state)
 
         if reader is not None:
