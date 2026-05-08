@@ -95,6 +95,19 @@ confirm = getattr(operator_notify_module, "confirm")
 logger = logging.getLogger(__name__)
 
 
+class CurrentHoldEEReferenceAndDelta(EEReferenceAndDelta):
+    """Update the disabled EE hold target from current FK each frame."""
+
+    def action(self, action: Any) -> Any:
+        try:
+            enabled = bool(action.get("enabled", False))
+        except (TypeError, ValueError):
+            enabled = False
+        if not enabled:
+            self._command_when_disabled = None
+        return super().action(action)
+
+
 class NoSendActionRobot:
     def __init__(self, robot: Any):
         self._robot = robot
@@ -478,7 +491,7 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
     teleop_action_processor = RobotProcessorPipeline(
         steps=[
             MapQuestActionToRobotAction(gripper_scale=gripper_scale),
-            EEReferenceAndDelta(
+            CurrentHoldEEReferenceAndDelta(
                 kinematics=kinematics,
                 end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
                 motor_names=motor_names,
