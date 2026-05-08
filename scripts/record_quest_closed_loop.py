@@ -94,6 +94,8 @@ confirm = getattr(operator_notify_module, "confirm")
 
 logger = logging.getLogger(__name__)
 
+_QUEST_ENABLED_HOLD_KEY = "_quest.enabled_for_hold"
+
 
 class CurrentHoldEEReferenceAndDelta(EEReferenceAndDelta):
     """Update the disabled EE hold target from current FK each frame."""
@@ -105,6 +107,21 @@ class CurrentHoldEEReferenceAndDelta(EEReferenceAndDelta):
             enabled = False
         if not enabled:
             self._command_when_disabled = None
+        output = super().action(action)
+        output[_QUEST_ENABLED_HOLD_KEY] = 1.0 if enabled else 0.0
+        return output
+
+
+class CurrentAwareEEBoundsAndSafety(EEBoundsAndSafety):
+    """Avoid EE jump checks when Quest tracking is explicitly disabled."""
+
+    def action(self, action: Any) -> Any:
+        try:
+            enabled = bool(float(action.get(_QUEST_ENABLED_HOLD_KEY, 0.0)))
+        except (TypeError, ValueError):
+            enabled = False
+        if not enabled:
+            self._last_pos = None
         return super().action(action)
 
 
@@ -183,6 +200,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
     def __init__(self, processor: Any, joint_limits: dict[str, Any] | None = None):
         self._processor = processor
         self._joint_limits = joint_limits or {}
+        self._latched_hold_action: dict[str, float] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._processor, name)
@@ -195,15 +213,22 @@ class HoldWhenQuestDisabledRobotActionProcessor:
         if not isinstance(raw_action, dict) or not isinstance(observation, dict):
             return self._processor(data)
 
+        action = dict(raw_action)
+        marker = action.pop(_QUEST_ENABLED_HOLD_KEY, 0.0)
         try:
-            quest_enabled = bool(float(raw_action.get("quest.enabled", 0.0)))
+            quest_enabled = bool(float(marker))
         except (TypeError, ValueError):
             quest_enabled = False
 
         if quest_enabled:
-            return self._processor(data)
+            self._latched_hold_action = None
+            return self._processor((action, observation))
 
-        output = _hold_observed_motor_positions(observation, self._joint_limits)
+        if self._latched_hold_action is None:
+            self._latched_hold_action = _hold_observed_motor_positions(
+                observation, self._joint_limits
+            )
+        output = dict(self._latched_hold_action)
         _log_quest_debug(
             event="closed_loop_disabled_joint_hold",
             commanded_joint_angles_deg=_ordered_joint_positions(output),
@@ -497,7 +522,7 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
                 motor_names=motor_names,
                 use_latched_reference=True,
             ),
-            EEBoundsAndSafety(
+            CurrentAwareEEBoundsAndSafety(
                 end_effector_bounds={"min": [-2.0, -2.0, -2.0], "max": [2.0, 2.0, 2.0]},
                 max_ee_step_m=0.05,
             ),
