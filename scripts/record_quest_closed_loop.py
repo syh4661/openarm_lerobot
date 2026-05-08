@@ -95,6 +95,8 @@ confirm = getattr(operator_notify_module, "confirm")
 logger = logging.getLogger(__name__)
 
 _QUEST_ENABLED_HOLD_KEY = "_quest.enabled_for_hold"
+_QUEST_ZERO_DELTA_HOLD_KEY = "_quest.zero_delta_hold"
+_ZERO_DELTA_EPS = 1e-9
 
 
 class CurrentHoldEEReferenceAndDelta(EEReferenceAndDelta):
@@ -105,10 +107,12 @@ class CurrentHoldEEReferenceAndDelta(EEReferenceAndDelta):
             enabled = bool(action.get("enabled", False))
         except (TypeError, ValueError):
             enabled = False
+        zero_delta = enabled and _action_has_zero_ee_delta(action)
         if not enabled:
             self._command_when_disabled = None
         output = super().action(action)
         output[_QUEST_ENABLED_HOLD_KEY] = 1.0 if enabled else 0.0
+        output[_QUEST_ZERO_DELTA_HOLD_KEY] = 1.0 if zero_delta else 0.0
         return output
 
 
@@ -195,7 +199,7 @@ class QuestDebugRobotActionProcessor:
 
 
 class HoldWhenQuestDisabledRobotActionProcessor:
-    """Bypass IK while Quest tracking is disabled and hold measured joints."""
+    """Bypass IK when Quest cannot produce a meaningful EE motion command."""
 
     def __init__(self, processor: Any, joint_limits: dict[str, Any] | None = None):
         self._processor = processor
@@ -215,14 +219,31 @@ class HoldWhenQuestDisabledRobotActionProcessor:
 
         action = dict(raw_action)
         marker = action.pop(_QUEST_ENABLED_HOLD_KEY, 0.0)
+        zero_delta_marker = action.pop(_QUEST_ZERO_DELTA_HOLD_KEY, 0.0)
         try:
             quest_enabled = bool(float(marker))
         except (TypeError, ValueError):
             quest_enabled = False
+        try:
+            zero_delta_hold = bool(float(zero_delta_marker))
+        except (TypeError, ValueError):
+            zero_delta_hold = False
 
         if quest_enabled:
-            self._latched_hold_action = None
-            return self._processor((action, observation))
+            if not zero_delta_hold:
+                self._latched_hold_action = None
+                return self._processor((action, observation))
+
+            output = _hold_observed_motor_positions(
+                observation,
+                self._joint_limits,
+                gripper_pos=action.get("ee.gripper_pos"),
+            )
+            _log_quest_debug(
+                event="closed_loop_zero_delta_joint_hold",
+                commanded_joint_angles_deg=_ordered_joint_positions(output),
+            )
+            return output
 
         if self._latched_hold_action is None:
             self._latched_hold_action = _hold_observed_motor_positions(
@@ -237,19 +258,42 @@ class HoldWhenQuestDisabledRobotActionProcessor:
 
 
 def _hold_observed_motor_positions(
-    observation: dict[str, Any], joint_limits: dict[str, Any]
+    observation: dict[str, Any],
+    joint_limits: dict[str, Any],
+    *,
+    gripper_pos: Any | None = None,
 ) -> dict[str, float]:
     output: dict[str, float] = {}
     for motor_name in QUEST_OPENARM_MOTOR_NAMES:
         key = f"{motor_name}.pos"
         if key not in observation:
             raise ValueError(f"Observation missing {key!r} for disabled joint hold.")
-        value = float(observation[key])
+        if motor_name == "gripper" and gripper_pos is not None:
+            value = float(gripper_pos)
+        else:
+            value = float(observation[key])
         if motor_name in joint_limits:
             lower, upper = joint_limits[motor_name]
             value = min(max(value, float(lower)), float(upper))
         output[key] = value
     return output
+
+
+def _action_has_zero_ee_delta(action: dict[str, Any]) -> bool:
+    for key in (
+        "target_x",
+        "target_y",
+        "target_z",
+        "target_wx",
+        "target_wy",
+        "target_wz",
+    ):
+        try:
+            if abs(float(action.get(key, 0.0))) > _ZERO_DELTA_EPS:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
 
 
 def _ordered_joint_positions(action: dict[str, Any]) -> list[float | None]:
