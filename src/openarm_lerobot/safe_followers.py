@@ -39,6 +39,8 @@ _SAFE_SHUTDOWN_RETRIES = 3
 _SAFE_SHUTDOWN_DELAY_S = 0.05
 _SAFE_SHUTDOWN_RECV_TIMEOUT_S = 0.1
 _SAFE_SHUTDOWN_SETTLE_S = 0.2
+_SAFE_SHUTDOWN_FINAL_SETTLE_S = 2.0
+_SAFE_SHUTDOWN_FINAL_DISABLE_CYCLES = 3
 _JOINT_LIMIT_TOLERANCE_DEG = 1e-6
 
 
@@ -152,12 +154,65 @@ class _SafeOpenArmBusShutdownMixin:
                 time.sleep(_SAFE_SHUTDOWN_SETTLE_S)
 
             if not last_failures:
-                self._drain_can_responses(_SAFE_SHUTDOWN_SETTLE_S)
+                self._final_disable_settle(ordered_motors, expected_recv_ids)
                 return
 
             time.sleep(_SAFE_SHUTDOWN_SETTLE_S)
 
         raise RuntimeError("; ".join(last_failures))
+
+    def _final_disable_settle(
+        self, ordered_motors: list[str], expected_recv_ids: list[int]
+    ) -> None:
+        """Keep the bus open briefly after disable ACKs so motors visibly settle."""
+
+        if self.bus.canbus is None:
+            raise RuntimeError("CAN bus is not initialized.")
+
+        recv_id_to_motor = {
+            self.bus._get_motor_recv_id(name): name for name in ordered_motors
+        }
+        final_failures: list[str] = []
+        for _ in range(_SAFE_SHUTDOWN_FINAL_DISABLE_CYCLES):
+            self._drain_can_responses()
+            for motor_name in ordered_motors:
+                try:
+                    _, msg = self._build_disable_message(motor_name)
+                    self.bus.canbus.send(msg)
+                except Exception as exc:
+                    final_failures.append(f"{motor_name}: final disable send failed: {exc}")
+
+            time.sleep(_SAFE_SHUTDOWN_DELAY_S)
+            try:
+                responses = self.bus._recv_all_responses(
+                    expected_recv_ids, timeout=_SAFE_SHUTDOWN_RECV_TIMEOUT_S
+                )
+            except Exception as exc:
+                final_failures.append(f"final disable response read failed: {exc}")
+                responses = {}
+
+            for recv_id, response in responses.items():
+                self.bus._process_response(recv_id_to_motor[recv_id], response)
+
+            missing_recv_ids = [
+                recv_id for recv_id in expected_recv_ids if recv_id not in responses
+            ]
+            for recv_id in missing_recv_ids:
+                final_failures.append(
+                    f"{recv_id_to_motor[recv_id]}: no final disable ack"
+                )
+            time.sleep(_SAFE_SHUTDOWN_SETTLE_S)
+
+        if final_failures:
+            raise RuntimeError("; ".join(final_failures))
+
+        logger.info(
+            "OpenArm torque disable acknowledged for %s; holding bus open %.1fs for visible shutdown.",
+            ", ".join(ordered_motors),
+            _SAFE_SHUTDOWN_FINAL_SETTLE_S,
+        )
+        time.sleep(_SAFE_SHUTDOWN_FINAL_SETTLE_S)
+        self._drain_can_responses(_SAFE_SHUTDOWN_SETTLE_S)
 
     def _disconnect_cameras(self) -> list[str]:
         shutdown_errors: list[str] = []
