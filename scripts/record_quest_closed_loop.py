@@ -334,9 +334,16 @@ class QuestDebugRobotActionProcessor:
 class HoldWhenQuestDisabledRobotActionProcessor:
     """Bypass IK when Quest cannot produce a meaningful EE motion command."""
 
-    def __init__(self, processor: Any, joint_limits: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        processor: Any,
+        joint_limits: dict[str, Any] | None = None,
+        *,
+        joint_slew_max_step_deg: float | None = None,
+    ):
         self._processor = processor
         self._joint_limits = joint_limits or {}
+        self._joint_slew_max_step_deg = joint_slew_max_step_deg
         self._latched_hold_action: dict[str, float] | None = None
         self._latched_zero_delta_action: dict[str, float] | None = None
         self._last_commanded_action: dict[str, float] | None = None
@@ -369,6 +376,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
                 self._latched_hold_action = None
                 self._latched_zero_delta_action = None
                 output = self._processor((action, observation))
+                output = self._apply_joint_slew_limit(output)
                 self._last_commanded_action = dict(output)
                 return output
 
@@ -405,6 +413,47 @@ class HoldWhenQuestDisabledRobotActionProcessor:
             event="closed_loop_disabled_joint_hold",
             commanded_joint_angles_deg=_ordered_joint_positions(output),
         )
+        return output
+
+    def _apply_joint_slew_limit(self, action: dict[str, Any]) -> dict[str, float]:
+        max_step = self._joint_slew_max_step_deg
+        if max_step is None or max_step <= 0.0 or self._last_commanded_action is None:
+            return dict(action)
+
+        output = dict(action)
+        clipped: dict[str, dict[str, float]] = {}
+        for motor_name in QUEST_OPENARM_MOTOR_NAMES:
+            if motor_name == "gripper":
+                continue
+            key = f"{motor_name}.pos"
+            if key not in output or key not in self._last_commanded_action:
+                continue
+            try:
+                current = float(output[key])
+                previous = float(self._last_commanded_action[key])
+            except (TypeError, ValueError):
+                continue
+            delta = current - previous
+            if abs(delta) <= max_step:
+                continue
+            limited = previous + max_step * (1.0 if delta > 0.0 else -1.0)
+            if motor_name in self._joint_limits:
+                lower, upper = self._joint_limits[motor_name]
+                limited = min(max(limited, float(lower)), float(upper))
+            output[key] = limited
+            clipped[motor_name] = {
+                "previous": previous,
+                "requested": current,
+                "limited": limited,
+            }
+
+        if clipped:
+            _log_quest_debug(
+                event="closed_loop_joint_slew_limited",
+                max_step_deg=max_step,
+                clipped=clipped,
+                commanded_joint_angles_deg=_ordered_joint_positions(output),
+            )
         return output
 
 
@@ -694,6 +743,7 @@ def make_teleop_config(raw: dict[str, Any]) -> Any:
     teleop_raw.pop("gripper_invert_velocity", None)
     teleop_raw.pop("gripper_control_mode", None)
     teleop_raw.pop("gripper_max_step_deg", None)
+    teleop_raw.pop("joint_slew_max_step_deg", None)
     teleop_raw.pop("ee_control_mode", None)
     teleop_raw.pop("pos_action_gain", None)
     teleop_raw.pop("max_lin_vel", None)
@@ -732,6 +782,9 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
     gripper_scale = -2.0 if gripper_invert_velocity else 2.0
     gripper_kwargs = _gripper_processor_kwargs(raw)
     gripper_control_mode = str(teleop_raw.get("gripper_control_mode", "velocity"))
+    joint_slew_max_step_deg = teleop_raw.get("joint_slew_max_step_deg")
+    if joint_slew_max_step_deg is not None:
+        joint_slew_max_step_deg = float(joint_slew_max_step_deg)
     ee_control_mode = str(teleop_raw.get("ee_control_mode", "static")).lower()
     ee_control_fps = float(
         teleop_raw.get("ee_control_fps", raw.get("dataset", {}).get("fps", 30.0))
@@ -776,6 +829,7 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
         gripper_kwargs["clip_min"],
         gripper_kwargs["clip_max"],
     )
+    logger.info("Quest joint slew limit config: max_step_deg=%s", joint_slew_max_step_deg)
     logger.info(
         "Quest EE control config: mode=%s fps=%s pos_gain=%s max_lin_vel=%s "
         "rot_gain=%s max_rot_vel=%s",
@@ -813,6 +867,7 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
     robot_action_processor = HoldWhenQuestDisabledRobotActionProcessor(
         robot_action_processor,
         joint_limits=dict(raw.get("robot", {}).get("joint_limits", {})),
+        joint_slew_max_step_deg=joint_slew_max_step_deg,
     )
     robot_observation_processor = RobotProcessorPipeline(
         steps=[
