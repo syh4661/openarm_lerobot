@@ -6,6 +6,7 @@ This MVP stays USB-only and avoids hardware side effects until connect().
 from __future__ import annotations
 
 from importlib import import_module
+from time import monotonic
 from typing import Any
 
 
@@ -44,6 +45,11 @@ class QuestReader:
         self.ip_address = ip_address
         self._reader: Any = None
         self._connected = False
+        self._read_count = 0
+        self._last_read_started_t: float | None = None
+        self._last_read_finished_t: float | None = None
+        self._last_payload_ok = False
+        self._last_none_reason = "never_read"
 
     @property
     def is_connected(self) -> bool:
@@ -74,8 +80,30 @@ class QuestReader:
         if callable(stop):
             _ = stop()
 
+    @property
+    def diagnostics(self) -> dict[str, object]:
+        return {
+            "read_count": self._read_count,
+            "last_read_started_t": self._last_read_started_t,
+            "last_read_finished_t": self._last_read_finished_t,
+            "last_payload_ok": self._last_payload_ok,
+            "last_none_reason": self._last_none_reason,
+        }
+
     def get_transforms_and_buttons(self):
         if not self._connected or self._reader is None:
             raise RuntimeError("QuestReader is not connected.")
 
-        return self._reader.get_transformations_and_buttons()
+        self._read_count += 1
+        self._last_read_started_t = monotonic()
+        payload = self._reader.get_transformations_and_buttons()
+        self._last_read_finished_t = monotonic()
+
+        self._last_payload_ok = (
+            isinstance(payload, tuple)
+            and len(payload) == 2
+            and isinstance(payload[0], dict)
+            and isinstance(payload[1], dict)
+        )
+        self._last_none_reason = "ok" if self._last_payload_ok else "bad_payload"
+        return payload

@@ -502,6 +502,37 @@ def run_droid_ee_velocity_case(kinematics: Any) -> None:
         raise AssertionError(f"DROID zero delta moved EE target: {zero_step}")
 
 
+def run_quest_diagnostic_reason_case() -> None:
+    read_controller_state = getattr(quest_teleop_module, "read_controller_state")
+    compute_calibrated_delta = getattr(quest_teleop_module, "compute_calibrated_delta")
+
+    class BadReader:
+        def get_transforms_and_buttons(self) -> object:
+            return None
+
+    state, reason = read_controller_state(BadReader(), "left", return_reason=True)
+    if state is not None or reason != "payload_not_tuple":
+        raise AssertionError(f"unexpected bad payload reason: {state}, {reason}")
+
+    identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    delta, reason = compute_calibrated_delta(
+        identity, identity, identity, return_reason=True
+    )
+    if delta is None or reason != "ok":
+        raise AssertionError(f"identity delta diagnostic failed: {delta}, {reason}")
+
+    delta, reason = compute_calibrated_delta(
+        object(), identity, identity, return_reason=True
+    )
+    if delta is not None or reason != "bad_raw_transform":
+        raise AssertionError(f"unexpected raw transform reason: {delta}, {reason}")
+
+
 def main() -> None:
     args = parse_args()
     kinematics = build_kinematics(args.urdf)
@@ -517,6 +548,7 @@ def main() -> None:
     run_zero_delta_holds_last_command_case()
     run_openarm_gripper_hold_ramp_case()
     run_droid_ee_velocity_case(kinematics)
+    run_quest_diagnostic_reason_case()
     run_fail_closed_case(pipeline)
     print("Quest processor step validation passed.")
 

@@ -296,6 +296,7 @@ class QuestDebugRobotActionProcessor:
             if isinstance(observation, dict):
                 observed_gripper = observation.get("gripper.pos")
         output = self._processor(data)
+        tick_t_pre_send = time.monotonic()
         commanded_gripper = output.get("gripper.pos") if isinstance(output, dict) else None
         gripper_vel = None
         gripper_delta = None
@@ -316,6 +317,7 @@ class QuestDebugRobotActionProcessor:
             pass
         _log_quest_debug(
             event="closed_loop_gripper_command",
+            tick_t_pre_send=tick_t_pre_send,
             quest_enabled=quest_enabled,
             quest_gripper=quest_gripper,
             gripper_vel=gripper_vel,
@@ -326,6 +328,7 @@ class QuestDebugRobotActionProcessor:
         )
         _log_quest_debug(
             event="closed_loop_joint_command",
+            tick_t_pre_send=tick_t_pre_send,
             commanded_joint_angles_deg=_ordered_joint_positions(output),
         )
         return output

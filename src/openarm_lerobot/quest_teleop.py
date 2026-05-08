@@ -459,69 +459,107 @@ def _log_quest_debug(**payload: object) -> None:
 
 
 def read_controller_state(
+    reader: _QuestReaderLike, side: str, *, return_reason: bool = False
+) -> (
+    tuple[np.ndarray, dict[str, object]]
+    | None
+    | tuple[tuple[np.ndarray, dict[str, object]] | None, str]
+):
+    state, reason = _read_controller_state_with_reason(reader, side)
+    if return_reason:
+        return state, reason
+    return state
+
+
+def _read_controller_state_with_reason(
     reader: _QuestReaderLike, side: str
-) -> tuple[np.ndarray, dict[str, object]] | None:
+) -> tuple[tuple[np.ndarray, dict[str, object]] | None, str]:
     controller_id = _normalize_controller_side(side)
     payload = reader.get_transforms_and_buttons()
     if not isinstance(payload, tuple) or len(payload) != 2:
-        return None
+        return None, "payload_not_tuple"
 
     poses_raw, buttons_raw = payload
     if not isinstance(poses_raw, dict) or not isinstance(buttons_raw, dict):
-        return None
+        return None, "payload_bad_maps"
 
     raw_transform = poses_raw.get(controller_id)
+    if raw_transform is None:
+        return None, f"missing_transform:{controller_id}"
     transform = _coerce_transform_4x4(raw_transform)
     if transform is None:
-        return None
+        return None, f"bad_transform:{controller_id}"
 
-    return transform, dict(buttons_raw)
+    return (transform, dict(buttons_raw)), "ok"
 
 
 def compute_calibrated_delta(
+    raw_tf: object,
+    ref_tf: object,
+    coord_matrix: object,
+    *,
+    return_reason: bool = False,
+) -> (
+    tuple[np.ndarray, np.ndarray]
+    | None
+    | tuple[tuple[np.ndarray, np.ndarray] | None, str]
+):
+    delta, reason = _compute_calibrated_delta_with_reason(
+        raw_tf, ref_tf, coord_matrix
+    )
+    if return_reason:
+        return delta, reason
+    return delta
+
+
+def _compute_calibrated_delta_with_reason(
     raw_tf: object, ref_tf: object, coord_matrix: object
-) -> tuple[np.ndarray, np.ndarray] | None:
+) -> tuple[tuple[np.ndarray, np.ndarray] | None, str]:
     raw_matrix = _coerce_transform_4x4(raw_tf)
+    if raw_matrix is None:
+        return None, "bad_raw_transform"
     ref_matrix = _coerce_transform_4x4(ref_tf)
+    if ref_matrix is None:
+        return None, "bad_ref_transform"
     reorder_matrix = _coerce_transform_4x4(coord_matrix)
-    if raw_matrix is None or ref_matrix is None or reorder_matrix is None:
-        return None
+    if reorder_matrix is None:
+        return None, "bad_coord_transform"
 
     try:
         ref_inverse = np.linalg.inv(ref_matrix)
     except np.linalg.LinAlgError:
-        return None
+        return None, "singular_ref"
 
     relative = ref_inverse @ raw_matrix
     if relative.shape != (4, 4) or not np.all(np.isfinite(relative)):
-        return None
+        return None, "bad_relative"
 
     reorder_rotation = reorder_matrix[:3, :3]
     relative_rotation = relative[:3, :3]
     relative_translation = relative[:3, 3]
 
     if not np.allclose(reorder_rotation.T @ reorder_rotation, np.eye(3), atol=1e-6):
-        return None
+        return None, "invalid_reorder_orthonormal"
 
     if not np.isclose(float(np.linalg.det(reorder_rotation)), 1.0, atol=1e-6):
-        return None
+        return None, "invalid_reorder_det"
 
     position_delta = (reorder_rotation @ relative_translation).copy()
     calibrated_rotation = reorder_rotation @ relative_rotation @ reorder_rotation.T
     orientation_delta = _rotation_matrix_to_rotvec(calibrated_rotation)
 
     if orientation_delta is None:
-        return None
+        return None, "bad_rotvec"
 
     if position_delta.shape != (3,) or orientation_delta.shape != (3,):
-        return None
+        return None, "bad_delta_shape"
 
     if not np.all(np.isfinite(position_delta)) or not np.all(
         np.isfinite(orientation_delta)
     ):
-        return None
+        return None, "nonfinite_delta"
 
-    return position_delta, orientation_delta
+    return (position_delta, orientation_delta), "ok"
 
 
 def solve_ik_to_joint_targets(

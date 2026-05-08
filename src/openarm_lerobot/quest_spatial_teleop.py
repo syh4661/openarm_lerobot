@@ -241,8 +241,9 @@ class QuestSpatialTeleop(Teleoperator):
             )
 
         quest_cfg = cast(Any, self._quest_config)
-        controller_state = read_controller_state(
-            self._reader, quest_cfg.controller_side
+        tick_t_pre_teleop = monotonic()
+        controller_state, controller_unavailable_reason = read_controller_state(
+            self._reader, quest_cfg.controller_side, return_reason=True
         )
         now = monotonic()
         if controller_state is None:
@@ -255,7 +256,11 @@ class QuestSpatialTeleop(Teleoperator):
             _log_quest_debug(
                 event="spatial_controller_unavailable",
                 t=now,
+                tick_t_pre_teleop=tick_t_pre_teleop,
+                tick_t_post_teleop=monotonic(),
                 state=self._state,
+                controller_unavailable_reason=controller_unavailable_reason,
+                quest_reader_diag=getattr(self._reader, "diagnostics", {}),
                 teleop_output=action,
             )
             return action
@@ -276,6 +281,8 @@ class QuestSpatialTeleop(Teleoperator):
             "gripper_open": _is_pressed(buttons.get(open_key)),
             "controller_raw_pose": controller_tf,
             "buttons": buttons,
+            "tick_t_pre_teleop": tick_t_pre_teleop,
+            "quest_reader_diag": getattr(self._reader, "diagnostics", {}),
         }
 
         if not grip_pressed:
@@ -287,7 +294,10 @@ class QuestSpatialTeleop(Teleoperator):
                 enabled=False, gripper=QUEST_SPATIAL_GRIPPER_NEUTRAL
             )
             _log_quest_debug(
-                event="spatial_idle_hold", **base_debug_payload, teleop_output=action
+                event="spatial_idle_hold",
+                **base_debug_payload,
+                tick_t_post_teleop=monotonic(),
+                teleop_output=action,
             )
             return action
 
@@ -308,15 +318,17 @@ class QuestSpatialTeleop(Teleoperator):
                 _log_quest_debug(
                     event="spatial_grip_settle",
                     **base_debug_payload,
+                    tick_t_post_teleop=monotonic(),
                     grip_settle_remaining_s=float(settling_left_s),
                     teleop_output=action,
                 )
                 return action
 
-        calibrated_delta = compute_calibrated_delta(
+        calibrated_delta, delta_unavailable_reason = compute_calibrated_delta(
             controller_tf,
             self._ref_controller_tf,
             self._coord_transform_matrix,
+            return_reason=True,
         )
         if calibrated_delta is None:
             action = self._zero_action(
@@ -326,6 +338,8 @@ class QuestSpatialTeleop(Teleoperator):
             _log_quest_debug(
                 event="spatial_delta_unavailable",
                 **base_debug_payload,
+                tick_t_post_teleop=monotonic(),
+                delta_unavailable_reason=delta_unavailable_reason,
                 teleop_output=action,
             )
             return action
@@ -363,6 +377,7 @@ class QuestSpatialTeleop(Teleoperator):
         _log_quest_debug(
             event="spatial_tracking",
             **base_debug_payload,
+            tick_t_post_teleop=monotonic(),
             calibrated_pos_delta=position_delta,
             calibrated_rot_delta=raw_orientation_delta,
             emitted_rot_delta=orientation_delta,

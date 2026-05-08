@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import datetime as dt
 import json
 import re
@@ -38,11 +39,13 @@ def _parse_log(
     list[tuple[dt.datetime, list[Any]]],
     dt.datetime | None,
     dt.datetime | None,
+    list[tuple[dt.datetime, dict[str, Any]]],
 ]:
     tracking: list[tuple[dt.datetime, dict[str, Any]]] = []
     idle = 0
     delta_unavailable = 0
     commands: list[tuple[dt.datetime, list[Any]]] = []
+    events: list[tuple[dt.datetime, dict[str, Any]]] = []
     first_ts: dt.datetime | None = None
     last_ts: dt.datetime | None = None
 
@@ -60,6 +63,7 @@ def _parse_log(
         except json.JSONDecodeError:
             continue
 
+        events.append((ts, payload))
         event = payload.get("event")
         if event == "spatial_tracking":
             tracking.append((ts, payload))
@@ -70,7 +74,7 @@ def _parse_log(
         elif event == "closed_loop_joint_command":
             commands.append((ts, payload.get("commanded_joint_angles_deg") or []))
 
-    return tracking, idle, delta_unavailable, commands, first_ts, last_ts
+    return tracking, idle, delta_unavailable, commands, first_ts, last_ts, events
 
 
 def _mean_vec(rows: list[dict[str, Any]], key: str) -> list[float] | None:
@@ -84,6 +88,112 @@ def _format_vec(values: list[float] | None) -> str:
     if values is None:
         return "n/a"
     return "[" + ", ".join(f"{value:.6f}" for value in values) + "]"
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    ordered = sorted(values)
+    rank = (len(ordered) - 1) * percentile
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = rank - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _format_stats_ms(values_s: list[float]) -> str:
+    if not values_s:
+        return "n/a"
+    p50 = _percentile(values_s, 0.50)
+    p95 = _percentile(values_s, 0.95)
+    p99 = _percentile(values_s, 0.99)
+    assert p50 is not None and p95 is not None and p99 is not None
+    return f"p50={p50 * 1000:.1f} p95={p95 * 1000:.1f} p99={p99 * 1000:.1f} ms"
+
+
+def _timing_summary(
+    events: list[tuple[dt.datetime, dict[str, Any]]],
+) -> dict[str, Any]:
+    teleop_events = [
+        payload
+        for _ts, payload in events
+        if payload.get("event")
+        in {
+            "spatial_tracking",
+            "spatial_idle_hold",
+            "spatial_grip_settle",
+            "spatial_delta_unavailable",
+            "spatial_controller_unavailable",
+        }
+        and payload.get("tick_t_pre_teleop") is not None
+    ]
+    command_events = [
+        payload
+        for _ts, payload in events
+        if payload.get("event") == "closed_loop_joint_command"
+        and payload.get("tick_t_pre_send") is not None
+    ]
+
+    teleop_durations: list[float] = []
+    for payload in teleop_events:
+        try:
+            teleop_durations.append(
+                float(payload["tick_t_post_teleop"])
+                - float(payload["tick_t_pre_teleop"])
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    tick_intervals: list[float] = []
+    previous: float | None = None
+    for payload in teleop_events:
+        try:
+            current = float(payload["tick_t_pre_teleop"])
+        except (TypeError, ValueError):
+            continue
+        if previous is not None:
+            tick_intervals.append(current - previous)
+        previous = current
+
+    pre_send_latencies: list[float] = []
+    for teleop_payload, command_payload in zip(teleop_events, command_events, strict=False):
+        try:
+            pre_send_latencies.append(
+                float(command_payload["tick_t_pre_send"])
+                - float(teleop_payload["tick_t_pre_teleop"])
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    reasons = Counter()
+    for _ts, payload in events:
+        event = payload.get("event")
+        if event == "spatial_delta_unavailable":
+            reasons[str(payload.get("delta_unavailable_reason", "unknown"))] += 1
+        elif event == "spatial_controller_unavailable":
+            reasons[str(payload.get("controller_unavailable_reason", "unknown"))] += 1
+
+    effective_input_rate_hz: float | None = None
+    if teleop_events:
+        starts = [
+            float(payload["tick_t_pre_teleop"])
+            for payload in teleop_events
+            if payload.get("tick_t_pre_teleop") is not None
+        ]
+        if len(starts) >= 2:
+            span_s = max(starts) - min(starts)
+            if span_s > 0:
+                effective_input_rate_hz = (len(starts) - 1) / span_s
+
+    return {
+        "teleop_durations": teleop_durations,
+        "tick_intervals": tick_intervals,
+        "pre_send_latencies": pre_send_latencies,
+        "reasons": reasons,
+        "effective_input_rate_hz": effective_input_rate_hz,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -135,7 +245,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    tracking, idle, delta_unavailable, commands, first_ts, last_ts = _parse_log(args.log)
+    (
+        tracking,
+        idle,
+        delta_unavailable,
+        commands,
+        first_ts,
+        last_ts,
+        events,
+    ) = _parse_log(args.log)
     span_s = (last_ts - first_ts).total_seconds() if first_ts and last_ts else None
 
     print(f"log {args.log}")
@@ -144,6 +262,25 @@ def main() -> None:
         f"tracking {len(tracking)} idle {idle} "
         f"delta_unavailable {delta_unavailable} commands {len(commands)}"
     )
+    timing = _timing_summary(events)
+    effective_input_rate_hz = timing["effective_input_rate_hz"]
+    if effective_input_rate_hz is None:
+        print("effective_input_rate_hz n/a")
+    else:
+        print(f"effective_input_rate_hz {effective_input_rate_hz:.2f}")
+    print(
+        "teleop_duration "
+        f"{_format_stats_ms(timing['teleop_durations'])}"
+    )
+    print(
+        "tick_interval "
+        f"{_format_stats_ms(timing['tick_intervals'])}"
+    )
+    print(
+        "pre_send_latency "
+        f"{_format_stats_ms(timing['pre_send_latencies'])}"
+    )
+    print(f"delta_unavailable_reasons {dict(timing['reasons'])}")
 
     if tracking:
         tracking_t0 = tracking[0][0]
