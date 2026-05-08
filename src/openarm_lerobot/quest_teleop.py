@@ -498,6 +498,7 @@ def compute_calibrated_delta(
     ref_tf: object,
     coord_matrix: object,
     *,
+    compute_orientation: bool = True,
     return_reason: bool = False,
 ) -> (
     tuple[np.ndarray, np.ndarray]
@@ -505,7 +506,7 @@ def compute_calibrated_delta(
     | tuple[tuple[np.ndarray, np.ndarray] | None, str]
 ):
     delta, reason = _compute_calibrated_delta_with_reason(
-        raw_tf, ref_tf, coord_matrix
+        raw_tf, ref_tf, coord_matrix, compute_orientation=compute_orientation
     )
     if return_reason:
         return delta, reason
@@ -513,7 +514,11 @@ def compute_calibrated_delta(
 
 
 def _compute_calibrated_delta_with_reason(
-    raw_tf: object, ref_tf: object, coord_matrix: object
+    raw_tf: object,
+    ref_tf: object,
+    coord_matrix: object,
+    *,
+    compute_orientation: bool = True,
 ) -> tuple[tuple[np.ndarray, np.ndarray] | None, str]:
     raw_matrix = _coerce_transform_4x4(raw_tf)
     if raw_matrix is None:
@@ -545,11 +550,13 @@ def _compute_calibrated_delta_with_reason(
         return None, "invalid_reorder_det"
 
     position_delta = (reorder_rotation @ relative_translation).copy()
-    calibrated_rotation = reorder_rotation @ relative_rotation @ reorder_rotation.T
-    orientation_delta = _rotation_matrix_to_rotvec(calibrated_rotation)
-
-    if orientation_delta is None:
-        return None, "bad_rotvec"
+    if compute_orientation:
+        calibrated_rotation = reorder_rotation @ relative_rotation @ reorder_rotation.T
+        orientation_delta = _rotation_matrix_to_rotvec(calibrated_rotation)
+        if orientation_delta is None:
+            return None, "bad_rotvec"
+    else:
+        orientation_delta = np.zeros(3, dtype=float)
 
     if position_delta.shape != (3,) or orientation_delta.shape != (3,):
         return None, "bad_delta_shape"

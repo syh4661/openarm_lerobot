@@ -334,10 +334,12 @@ class QuestSpatialTeleop(Teleoperator):
                 )
                 return action
 
+        zero_orientation_delta = bool(quest_cfg.zero_orientation_delta)
         calibrated_delta, delta_unavailable_reason = compute_calibrated_delta(
             controller_tf,
             self._ref_controller_tf,
             self._coord_transform_matrix,
+            compute_orientation=not zero_orientation_delta,
             return_reason=True,
         )
         if calibrated_delta is None:
@@ -357,7 +359,7 @@ class QuestSpatialTeleop(Teleoperator):
         position_delta, raw_orientation_delta = calibrated_delta
         orientation_delta = (
             np.zeros(3, dtype=float)
-            if bool(quest_cfg.zero_orientation_delta)
+            if zero_orientation_delta
             else raw_orientation_delta
         )
         scaled_position = position_delta * float(quest_cfg.spatial_scale)
@@ -391,7 +393,7 @@ class QuestSpatialTeleop(Teleoperator):
             calibrated_pos_delta=position_delta,
             calibrated_rot_delta=raw_orientation_delta,
             emitted_rot_delta=orientation_delta,
-            zero_orientation_delta=bool(quest_cfg.zero_orientation_delta),
+            zero_orientation_delta=zero_orientation_delta,
             calibrated_pos_delta_norm=float(np.linalg.norm(position_delta)),
             calibrated_rot_delta_norm=float(np.linalg.norm(raw_orientation_delta)),
             scaled_pos_delta=scaled_position,

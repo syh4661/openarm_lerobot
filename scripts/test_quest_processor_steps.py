@@ -532,6 +532,32 @@ def run_quest_diagnostic_reason_case() -> None:
     if delta is not None or reason != "bad_raw_transform":
         raise AssertionError(f"unexpected raw transform reason: {delta}, {reason}")
 
+    bad_rotation = [
+        [2.0, 0.0, 0.0, 0.01],
+        [0.0, 1.0, 0.0, 0.02],
+        [0.0, 0.0, 1.0, 0.03],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    delta, reason = compute_calibrated_delta(
+        bad_rotation, identity, identity, return_reason=True
+    )
+    if delta is not None or reason != "bad_rotvec":
+        raise AssertionError(
+            f"expected bad_rotvec with orientation enabled: {delta}, {reason}"
+        )
+
+    delta, reason = compute_calibrated_delta(
+        bad_rotation,
+        identity,
+        identity,
+        compute_orientation=False,
+        return_reason=True,
+    )
+    if delta is None or reason != "ok":
+        raise AssertionError(
+            f"translation-only delta should ignore bad rotation: {delta}, {reason}"
+        )
+
 
 def main() -> None:
     args = parse_args()
