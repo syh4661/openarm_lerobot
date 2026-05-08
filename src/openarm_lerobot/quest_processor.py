@@ -55,26 +55,37 @@ def _resolve_configs_types() -> tuple[object, object, type[object]]:
     return feature_type, pipeline_feature_type, cast(type[object], policy_feature)
 
 
-def _resolve_processor_types() -> tuple[type[object], type[object]]:
+class _TransitionKeyFallback:
+    ACTION = "action"
+    OBSERVATION = "observation"
+
+
+def _resolve_processor_types() -> tuple[type[object], type[object], object]:
     try:
         module = import_module("lerobot.processor")
     except ModuleNotFoundError:
-        return _ProcessorStepRegistryFallback, _RobotActionProcessorStepFallback
+        return (
+            _ProcessorStepRegistryFallback,
+            _RobotActionProcessorStepFallback,
+            _TransitionKeyFallback,
+        )
 
     registry = getattr(module, "ProcessorStepRegistry", _ProcessorStepRegistryFallback)
     step_base = getattr(
         module, "RobotActionProcessorStep", _RobotActionProcessorStepFallback
     )
-    return cast(type[object], registry), cast(type[object], step_base)
+    transition_key = getattr(module, "TransitionKey", _TransitionKeyFallback)
+    return cast(type[object], registry), cast(type[object], step_base), transition_key
 
 
 FeatureType, PipelineFeatureType, PolicyFeature = _resolve_configs_types()
-ProcessorStepRegistry, RobotActionProcessorStep = _resolve_processor_types()
+ProcessorStepRegistry, RobotActionProcessorStep, TransitionKey = _resolve_processor_types()
 FeatureTypeAny = cast(Any, FeatureType)
 PipelineFeatureTypeAny = cast(Any, PipelineFeatureType)
 PolicyFeatureAny = cast(Any, PolicyFeature)
 ProcessorStepRegistryAny = cast(Any, ProcessorStepRegistry)
 RobotActionProcessorStepAny = cast(Any, RobotActionProcessorStep)
+TransitionKeyAny = cast(Any, TransitionKey)
 RobotAction = dict[str, float]
 
 
@@ -138,3 +149,63 @@ class MapQuestActionToRobotAction(RobotActionProcessorStepAny):
             )
 
         return features
+
+
+@ProcessorStepRegistryAny.register("openarm_gripper_velocity_to_joint")
+@dataclass
+class OpenArmGripperVelocityToJoint(RobotActionProcessorStepAny):
+    """Convert gripper velocity into a bounded held target with per-tick ramping."""
+
+    clip_min: float = 0.0
+    clip_max: float = 10.0
+    max_step_deg: float = 0.5
+    deadband: float = 1e-6
+    _target_pos: float | None = None
+
+    def action(self, action: RobotAction) -> RobotAction:
+        observation = self.transition.get(TransitionKeyAny.OBSERVATION)
+        if observation is None:
+            raise ValueError("Observation is required for gripper target processing.")
+
+        gripper_vel = float(action.pop("ee.gripper_vel"))
+        observed_pos = self._observed_gripper_pos(observation)
+        if self._target_pos is None:
+            self._target_pos = self._clip(observed_pos)
+
+        if abs(gripper_vel) > self.deadband:
+            goal = self.clip_max if gripper_vel > 0.0 else self.clip_min
+            step = min(abs(gripper_vel) * self.max_step_deg, self.max_step_deg)
+            self._target_pos = self._move_toward(self._target_pos, goal, step)
+
+        action["ee.gripper_pos"] = self._clip(self._target_pos)
+        return action
+
+    def transform_features(
+        self, features: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        features[PipelineFeatureTypeAny.ACTION].pop("ee.gripper_vel", None)
+        features[PipelineFeatureTypeAny.ACTION]["ee.gripper_pos"] = PolicyFeatureAny(
+            type=FeatureTypeAny.ACTION, shape=(1,)
+        )
+        return features
+
+    def _observed_gripper_pos(self, observation: dict[str, Any]) -> float:
+        if "gripper.pos" in observation:
+            return float(observation["gripper.pos"])
+
+        pos_values = [
+            float(value)
+            for key, value in observation.items()
+            if isinstance(key, str) and key.endswith(".pos")
+        ]
+        if not pos_values:
+            raise ValueError("Observation does not contain a gripper position.")
+        return pos_values[-1]
+
+    def _clip(self, value: float) -> float:
+        return min(max(float(value), float(self.clip_min)), float(self.clip_max))
+
+    def _move_toward(self, current: float, goal: float, step: float) -> float:
+        if current < goal:
+            return self._clip(min(current + step, goal))
+        return self._clip(max(current - step, goal))

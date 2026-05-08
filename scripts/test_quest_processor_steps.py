@@ -281,6 +281,38 @@ def run_fail_closed_case(pipeline: Any) -> None:
     raise AssertionError("bad observation case did not fail closed")
 
 
+def run_openarm_gripper_hold_ramp_case() -> None:
+    processor_module = import_module("lerobot.processor")
+    quest_processor_module = import_module("openarm_lerobot.quest_processor")
+
+    transition_key = getattr(processor_module, "TransitionKey")
+    gripper_processor = getattr(
+        quest_processor_module, "OpenArmGripperVelocityToJoint"
+    )
+    processor = gripper_processor(
+        clip_min=0.0,
+        clip_max=10.0,
+        max_step_deg=0.5,
+    )
+    observation = {"gripper.pos": 0.0}
+    targets: list[float] = []
+
+    for gripper_vel in [1.0, 1.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0]:
+        transition = {
+            transition_key.ACTION: {"ee.gripper_vel": gripper_vel},
+            transition_key.OBSERVATION: observation,
+        }
+        target = float(processor(transition)[transition_key.ACTION]["ee.gripper_pos"])
+        targets.append(target)
+        observation = {"gripper.pos": target}
+
+    expected = [0.5, 1.0, 1.5, 1.5, 1.5, 1.0, 0.5, 0.5]
+    if targets != expected:
+        raise AssertionError(
+            f"hold-ramp gripper targets were not rate-limited/held: {targets}"
+        )
+
+
 def main() -> None:
     args = parse_args()
     kinematics = build_kinematics(args.urdf)
@@ -293,6 +325,7 @@ def main() -> None:
     run_disabled_hold_case(build_pipeline(kinematics), observation)
     run_stateful_latched_reference_case(kinematics, observation)
     run_disabled_after_tracking_case(kinematics, observation)
+    run_openarm_gripper_hold_ramp_case()
     run_fail_closed_case(pipeline)
     print("Quest processor step validation passed.")
 

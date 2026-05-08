@@ -71,6 +71,9 @@ record_loop = getattr(record_module, "record_loop")
 MapQuestActionToRobotAction = getattr(
     quest_processor_module, "MapQuestActionToRobotAction"
 )
+OpenArmGripperVelocityToJoint = getattr(
+    quest_processor_module, "OpenArmGripperVelocityToJoint"
+)
 QuestSpatialTeleop = getattr(quest_spatial_teleop_module, "QuestSpatialTeleop")
 QuestSpatialTeleopConfig = getattr(
     quest_spatial_teleop_module, "QuestSpatialTeleopConfig"
@@ -111,7 +114,45 @@ class QuestDebugRobotActionProcessor:
         return getattr(self._processor, name)
 
     def __call__(self, data: Any) -> Any:
+        quest_gripper = None
+        quest_enabled = None
+        observed_gripper = None
+        if isinstance(data, tuple) and len(data) == 2:
+            raw_action, observation = data
+            if isinstance(raw_action, dict):
+                quest_gripper = raw_action.get("quest.gripper")
+                quest_enabled = raw_action.get("quest.enabled")
+            if isinstance(observation, dict):
+                observed_gripper = observation.get("gripper.pos")
         output = self._processor(data)
+        commanded_gripper = output.get("gripper.pos") if isinstance(output, dict) else None
+        gripper_vel = None
+        gripper_delta = None
+        commanded_gripper_delta = None
+        try:
+            enabled = bool(float(quest_enabled)) if quest_enabled is not None else False
+            normalized = float(quest_gripper)
+            gripper_vel = (normalized - 0.5) * 2.0 if enabled else 0.0
+            gripper_delta = gripper_vel * 10.0
+        except (TypeError, ValueError):
+            pass
+        try:
+            if observed_gripper is not None and commanded_gripper is not None:
+                commanded_gripper_delta = float(commanded_gripper) - float(
+                    observed_gripper
+                )
+        except (TypeError, ValueError):
+            pass
+        _log_quest_debug(
+            event="closed_loop_gripper_command",
+            quest_enabled=quest_enabled,
+            quest_gripper=quest_gripper,
+            gripper_vel=gripper_vel,
+            gripper_delta_deg=gripper_delta,
+            observed_gripper_pos=observed_gripper,
+            commanded_gripper_pos=commanded_gripper,
+            commanded_gripper_delta_deg=commanded_gripper_delta,
+        )
         _log_quest_debug(
             event="closed_loop_joint_command",
             commanded_joint_angles_deg=_ordered_joint_positions(output),
@@ -182,6 +223,12 @@ def make_teleop_config(raw: dict[str, Any]) -> Any:
     teleop_raw.pop("motor_names", None)
     teleop_raw.pop("joint_offsets_deg", None)
     teleop_raw.pop("urdf_path", None)
+    teleop_raw.pop("gripper_speed_factor", None)
+    teleop_raw.pop("gripper_clip_min", None)
+    teleop_raw.pop("gripper_clip_max", None)
+    teleop_raw.pop("gripper_invert_velocity", None)
+    teleop_raw.pop("gripper_control_mode", None)
+    teleop_raw.pop("gripper_max_step_deg", None)
     return QuestSpatialTeleopConfig(**teleop_raw)
 
 
@@ -194,11 +241,48 @@ def make_kinematics(urdf_path: Path) -> Any:
     )
 
 
-def make_processors(kinematics: Any) -> tuple[Any, Any, Any]:
+def _gripper_processor_kwargs(raw: dict[str, Any]) -> dict[str, float]:
+    teleop_raw = raw.get("teleop", {})
+    robot_limits = raw.get("robot", {}).get("joint_limits", {})
+    gripper_limits = robot_limits.get("gripper", [-65.0, 0.0])
+    return {
+        "speed_factor": float(teleop_raw.get("gripper_speed_factor", 10.0)),
+        "clip_min": float(teleop_raw.get("gripper_clip_min", gripper_limits[0])),
+        "clip_max": float(teleop_raw.get("gripper_clip_max", gripper_limits[1])),
+    }
+
+
+def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any]:
     motor_names = list(QUEST_OPENARM_MOTOR_NAMES)
+    teleop_raw = raw.get("teleop", {})
+    gripper_invert_velocity = bool(
+        teleop_raw.get("gripper_invert_velocity", False)
+    )
+    gripper_scale = -2.0 if gripper_invert_velocity else 2.0
+    gripper_kwargs = _gripper_processor_kwargs(raw)
+    gripper_control_mode = str(teleop_raw.get("gripper_control_mode", "velocity"))
+    gripper_processor = GripperVelocityToJoint(**gripper_kwargs)
+    if gripper_control_mode == "hold_ramp":
+        gripper_processor = OpenArmGripperVelocityToJoint(
+            clip_min=gripper_kwargs["clip_min"],
+            clip_max=gripper_kwargs["clip_max"],
+            max_step_deg=float(teleop_raw.get("gripper_max_step_deg", 0.5)),
+        )
+    elif gripper_control_mode != "velocity":
+        raise ValueError(
+            "teleop.gripper_control_mode must be either 'velocity' or 'hold_ramp'."
+        )
+    logger.info(
+        "Quest gripper processor config: mode=%s scale=%s speed_factor=%s clip=[%s, %s]",
+        gripper_control_mode,
+        gripper_scale,
+        gripper_kwargs["speed_factor"],
+        gripper_kwargs["clip_min"],
+        gripper_kwargs["clip_max"],
+    )
     teleop_action_processor = RobotProcessorPipeline(
         steps=[
-            MapQuestActionToRobotAction(),
+            MapQuestActionToRobotAction(gripper_scale=gripper_scale),
             EEReferenceAndDelta(
                 kinematics=kinematics,
                 end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
@@ -209,7 +293,7 @@ def make_processors(kinematics: Any) -> tuple[Any, Any, Any]:
                 end_effector_bounds={"min": [-2.0, -2.0, -2.0], "max": [2.0, 2.0, 2.0]},
                 max_ee_step_m=0.05,
             ),
-            GripperVelocityToJoint(speed_factor=10.0, clip_min=-65.0, clip_max=0.0),
+            gripper_processor,
         ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
@@ -285,7 +369,7 @@ def main() -> None:
         Path(raw["teleop"].get("urdf_path", "assets/openarm_right.urdf"))
     )
     teleop_action_processor, robot_action_processor, robot_observation_processor = (
-        make_processors(kinematics)
+        make_processors(raw, kinematics)
     )
     robot_action_processor = QuestDebugRobotActionProcessor(robot_action_processor)
     dataset = make_dataset(
