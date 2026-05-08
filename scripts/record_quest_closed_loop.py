@@ -167,8 +167,9 @@ class QuestDebugRobotActionProcessor:
 class HoldWhenQuestDisabledRobotActionProcessor:
     """Bypass IK while Quest tracking is disabled and hold measured joints."""
 
-    def __init__(self, processor: Any):
+    def __init__(self, processor: Any, joint_limits: dict[str, Any] | None = None):
         self._processor = processor
+        self._joint_limits = joint_limits or {}
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._processor, name)
@@ -189,7 +190,7 @@ class HoldWhenQuestDisabledRobotActionProcessor:
         if quest_enabled:
             return self._processor(data)
 
-        output = _hold_observed_motor_positions(observation)
+        output = _hold_observed_motor_positions(observation, self._joint_limits)
         _log_quest_debug(
             event="closed_loop_disabled_joint_hold",
             commanded_joint_angles_deg=_ordered_joint_positions(output),
@@ -197,13 +198,19 @@ class HoldWhenQuestDisabledRobotActionProcessor:
         return output
 
 
-def _hold_observed_motor_positions(observation: dict[str, Any]) -> dict[str, float]:
+def _hold_observed_motor_positions(
+    observation: dict[str, Any], joint_limits: dict[str, Any]
+) -> dict[str, float]:
     output: dict[str, float] = {}
     for motor_name in QUEST_OPENARM_MOTOR_NAMES:
         key = f"{motor_name}.pos"
         if key not in observation:
             raise ValueError(f"Observation missing {key!r} for disabled joint hold.")
-        output[key] = float(observation[key])
+        value = float(observation[key])
+        if motor_name in joint_limits:
+            lower, upper = joint_limits[motor_name]
+            value = min(max(value, float(lower)), float(upper))
+        output[key] = value
     return output
 
 
@@ -498,7 +505,8 @@ def make_processors(raw: dict[str, Any], kinematics: Any) -> tuple[Any, Any, Any
         to_output=transition_to_robot_action,
     )
     robot_action_processor = HoldWhenQuestDisabledRobotActionProcessor(
-        robot_action_processor
+        robot_action_processor,
+        joint_limits=dict(raw.get("robot", {}).get("joint_limits", {})),
     )
     robot_observation_processor = RobotProcessorPipeline(
         steps=[
