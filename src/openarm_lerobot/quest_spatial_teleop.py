@@ -28,7 +28,6 @@ from .quest_teleop import (
     _coord_vec_to_matrix,
     _is_pressed,
     _log_quest_debug,
-    _map_trigger_to_gripper_deg,
     _normalize_controller_side,
     _resolve_quest_reader_class,
     compute_calibrated_delta,
@@ -110,11 +109,27 @@ class QuestSpatialTeleopConfig(TeleoperatorConfig):
         _validate_spatial_contract(self)
 
 
-def _controller_command_keys(controller_side: str) -> tuple[str, str]:
+def _controller_command_keys(controller_side: str) -> tuple[str, str, str]:
     side = _normalize_controller_side(controller_side)
     if side == "l":
-        return "LG", "leftTrig"
-    return "RG", "rightTrig"
+        return "LG", "leftTrig", "Y"
+    return "RG", "rightTrig", "B"
+
+
+def _coerce_trigger_value(trigger_value: object) -> float | None:
+    if isinstance(trigger_value, (tuple, list)):
+        if len(trigger_value) != 1:
+            return None
+        trigger_value = trigger_value[0]
+    if not isinstance(trigger_value, (int, float, str)):
+        return None
+    try:
+        value = float(trigger_value)
+    except ValueError:
+        return None
+    if not np.isfinite(value):
+        return None
+    return float(min(1.0, max(0.0, value)))
 
 
 class QuestSpatialTeleop(Teleoperator):
@@ -233,16 +248,19 @@ class QuestSpatialTeleop(Teleoperator):
             return action
 
         controller_tf, buttons = controller_state
-        grip_key, trigger_key = _controller_command_keys(quest_cfg.controller_side)
-        grip_pressed = _is_pressed(buttons.get(grip_key))
-        trigger_gripper = _map_trigger_to_gripper_deg(
-            buttons.get(trigger_key), quest_cfg.gripper_range_deg
+        grip_key, trigger_key, open_key = _controller_command_keys(
+            quest_cfg.controller_side
         )
-        normalized_gripper = self._normalize_gripper(trigger_gripper)
+        grip_pressed = _is_pressed(buttons.get(grip_key))
+        normalized_gripper = self._gripper_command(
+            close_trigger=buttons.get(trigger_key),
+            open_button=buttons.get(open_key),
+        )
         base_debug_payload = {
             "t": monotonic(),
             "state": self._state,
             "grip": grip_pressed,
+            "gripper_open": _is_pressed(buttons.get(open_key)),
             "controller_raw_pose": controller_tf,
             "buttons": buttons,
         }
@@ -336,16 +354,21 @@ class QuestSpatialTeleop(Teleoperator):
         if reader is not None:
             reader.disconnect()
 
-    def _normalize_gripper(self, trigger_gripper: float | None) -> float:
-        if trigger_gripper is None:
-            return 0.0
-        quest_cfg = cast(Any, self._quest_config)
-        grip_min, grip_max = quest_cfg.gripper_range_deg
-        denom = grip_max - grip_min
-        if abs(denom) <= 1e-12:
-            return 0.0
-        normalized = (float(trigger_gripper) - grip_min) / denom
-        return float(min(1.0, max(0.0, normalized)))
+    def _gripper_command(
+        self,
+        *,
+        close_trigger: object,
+        open_button: object,
+    ) -> float:
+        trigger = _coerce_trigger_value(close_trigger)
+        close_strength = 0.0 if trigger is None or trigger < 0.05 else trigger
+        open_pressed = _is_pressed(open_button)
+
+        if open_pressed == (close_strength > 0.0):
+            return QUEST_SPATIAL_GRIPPER_NEUTRAL
+        if open_pressed:
+            return 1.0
+        return float(max(0.0, QUEST_SPATIAL_GRIPPER_NEUTRAL * (1.0 - close_strength)))
 
     def _zero_action(self, *, enabled: bool, gripper: float) -> dict[str, float]:
         return {
